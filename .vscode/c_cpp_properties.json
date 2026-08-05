@@ -1,0 +1,28 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "DroneBench",
+
+            // ESP-IDF writes every include path it uses into this file during
+            // the build. Pointing at it is what lets the editor resolve
+            // esp_chip_info.h and friends — the paths live deep inside
+            // ~/esp/esp-idf/components/ and change between IDF versions, so
+            // hand-listing them would rot immediately.
+            //
+            // The file only exists after a build (build/ is gitignored). On a
+            // fresh clone: `make fw` once, then reload the window.
+            "compileCommands": "${workspaceFolder}/firmware/app/esp32/build/compile_commands.json",
+
+            // Used for files the ESP32 build does not know about — the
+            // portable core and its host tests.
+            "includePath": [
+                "${workspaceFolder}/firmware/core/include",
+                "${workspaceFolder}/firmware/tests"
+            ],
+
+            "cStandard": "c11",
+            "compilerPath": "/usr/bin/cc"
+        }
+    ]
+}

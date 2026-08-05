@@ -1,0 +1,12 @@
+# Committed build configuration. The generated sdkconfig is gitignored — this
+# file is what makes a fresh clone build the same firmware.
+
+# Keep the target build as strict as the host build: string literals are const,
+# and code that forgets it is a bug waiting for a flash write to random memory.
+CONFIG_COMPILER_WARN_WRITE_STRINGS=y
+
+# Confirmed with `esptool flash_id` on the actual board: 4 MB.
+# Not assumed — configuring 4 MB on a 2 MB part produces a board that flashes
+# and then fails at runtime.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"

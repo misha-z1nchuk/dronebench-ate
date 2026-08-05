@@ -1,0 +1,990 @@
+# DroneBench ATE — план
+
+**Версія:** 2.0
+**Дата оновлення:** 2026-08-05
+**Перша ціль:** стенд діагностики 1S FPV на прикладі Meteor75 Pro
+**Основні платформи:** ESP32/ESP-IDF → STM32 NUCLEO-F446RE
+**Подальше розширення:** окремий high-current модуль для 10″ FPV
+
+---
+
+# 0. Що змінилось у версії 2.0
+
+Технічні виправлення до v1:
+
+| # | Було | Стало | Чому |
+|---:|---|---|---|
+| 1 | Дільник напруги 10k/20k → 2.90 V на ADC | 10k/10k → 2.18 V | 2.90 V виходить за лінійну зону ADC ESP32 |
+| 2 | Струм міряє тільки ACS724 50 A | Передбачено референсний канал INA226 | Роздільності 50-амперного сенсора може не вистачити на різницю між моторами. Рішення про покупку — після вимірювання, розділ 3.3.1 |
+| 3 | Нуль ACS724 калібрується один раз | Ratiometric: третій ADC-канал міряє VCC | Нуль ACS724 = VCC/2, а USB 5 V гуляє 4.7–5.2 V |
+| 4 | Немає pin map | Розділ 5.5 | ADC2 не працює одночасно з Wi-Fi |
+| 5 | Немає запобіжника | Fuse у силовому тракті | 1S 80C pack у КЗ дає 20–30 A |
+| 6 | MSP-інтеграція на Дні 17 | MSP spike на Дні 8–10 | Потребує лише дрон + батарею, які вже є. Це найризикованіший пункт — перевіряти першим |
+| 7 | 25 днів на все, включно зі STM32 | 21 день на стенд + окрема Фаза 4 | STM32-порт із DMA і CI — це ще один такий самий блок |
+| 8 | Немає error budget | Розділ 11.1 | Без цільової похибки немає критерію «відкалібровано» |
+
+---
+
+# 1. Що ми будуємо
+
+## DroneBench ATE
+
+Автоматизований стенд для первинної перевірки та категоризації FPV-дронів.
+
+Система повинна відповідати на питання:
+
+- чи безпечно подавати живлення;
+- чи нормально запускається flight controller;
+- чи є аномальне idle/startup споживання;
+- чи запускаються всі двигуни;
+- чи один двигун споживає помітно більше за інші;
+- чи є сильний voltage sag;
+- чи працює receiver/failsafe, якщо це доступно;
+- який наступний діагностичний крок виконати.
+
+Категорії результату:
+
+- `PASS` — готовий до використання;
+- `REPAIR_MINOR` — дрібний ремонт або обслуговування;
+- `REPAIR_ELECTRONICS` — підозра на motor/ESC/FC/проводку;
+- `UNSAFE` — коротке замикання, аномальне споживання або нестабільне живлення;
+- `UNKNOWN` — потрібна ручна діагностика.
+
+Стенд не повинен без доказів стверджувати, що конкретна деталь згоріла.
+
+Правильний формат:
+
+```text
+Observed:
+Motor 4 does not start.
+
+Likely causes:
+- Motor 4 failure
+- ESC channel 4 failure
+- Wiring or solder joint
+
+Recommended next test:
+Connect a known-good motor to ESC channel 4.
+```
+
+---
+
+# 2. Архітектура 1S-версії
+
+```text
+                       PC / Linux
+              Python test runner + reports
+                 |                    |
+             USB/UART              USB/MSP
+                 |                    |
+                 v                    v
+          ESP32 / STM32          Meteor75 Pro
+             |        |
+      ADC (AFE)    I2C (reference)
+             |        |
+   +---------+        +-----------+
+   |         |                    |
+Voltage   ACS724 50 A         INA226 + 5 mΩ
+divider   + VCC monitor          shunt
+   |         |                    |
+   +---------+---- 1S power path--+
+```
+
+Два незалежні шляхи вимірювання струму — свідоме рішення:
+
+- **ACS724 + ADC** — навчальний тракт. Тут вивчаються ADC, калібрування, фільтрація, timer/DMA на STM32. Швидкий, ловить транзієнти, але шумний.
+- **INA226 + шунт** — референс. 16 біт, роздільність ~0.5 mA, майже не потребує калібрування. Ним валідується перший тракт і на нього спираються рішення про відхилення моторів.
+
+У фінальному звіті це стає окремим розділом: «error budget мого analog front-end проти незалежного референсу».
+
+## ESP32
+
+Перша робоча реалізація:
+
+- ESP-IDF;
+- UART CLI;
+- FreeRTOS tasks/queues;
+- telemetry;
+- state machine;
+- fault manager;
+- Python logger;
+- portable core.
+
+## STM32 NUCLEO-F446RE
+
+Фінальна портфолійна реалізація:
+
+- STM32CubeIDE або CMake;
+- HAL, пізніше окремі LL/register-level вправи;
+- ADC;
+- timer-triggered sampling;
+- DMA;
+- UART;
+- watchdog;
+- Flash configuration;
+- SWD debugging;
+- FreeRTOS;
+- пізніше CAN.
+
+---
+
+# 3. Фактичний комплект
+
+## 3.1 Уже є
+
+- ESP32 — 1 шт.;
+- Meteor75 Pro — 1 шт.;
+- 1S батареї;
+- MB102 830 points — 1 шт.;
+- ПК;
+- USB-кабель ESP32;
+- USB-кабель Meteor75 Pro.
+
+## 3.2 Замовлено
+
+| № | Компонент | Кількість | Призначення |
+|---:|---|---:|---|
+| 1 | ACS724 50 A Hall current sensor module | 1 | Аналоговий тракт вимірювання струму (навчальний) |
+| 2 | BT2.0 Male–Female extension | 2 | Inline-підключення батарея → стенд → дрон |
+| 3 | Силіконовий провід 18AWG, червоний | 1 м | Силовий `+` |
+| 4 | Силіконовий провід 18AWG, чорний | 1 м | Силовий `GND/−` |
+| 5 | Алюмінієвий резистор 1 Ω 50 W | 2 | Тестове навантаження ~4 A або ~8 A |
+| 6 | Керамічний конденсатор 100 nF | 10–20 | ADC-фільтри та decoupling |
+| 7 | Резистор 10 kΩ, 1% | 10 | Дільники та запас |
+| 8 | Резистор 20 kΩ, 1% | 10 | Дільник VCC-моніторингу |
+| 9 | Logic analyzer 8 channels / 24 MHz | 1 | UART, SPI, I²C, PWM, DShot і timing |
+| 10 | Набір термоусадки | 1 | Ізоляція |
+| 11 | Dupont M-M / M-F / F-F | 1 набір | Сигнальні з'єднання |
+| 12 | NUCLEO-F446RE | 1 | Фаза 4, STM32-port |
+
+## 3.3 Треба докупити
+
+| № | Компонент | К-сть | Ціна | Навіщо | Пріоритет |
+|---:|---|---:|---:|---|---|
+| 1 | **Мультиметр** з DC V (4 розряди), Ω, continuity | 1 | ~$25 | Без нього не почнеться жоден hardware-крок. Потрібна роздільність мінімум 1 mV на діапазоні 5 V, інакше калібрування ADC безглузде | **Обов'язково** |
+| 2 | **INA226 breakout, обов'язково версія з шунтом 0.01 Ω** | 1 | ~215 ₴ | Референсний канал струму. Рішення про покупку — див. 3.3.1. Окремий шунт не потрібен | За рішенням |
+| 3 | **Тримач автомобільного запобіжника на проводі 14AWG** + ножові запобіжники 15 A і 20 A | 1 + набір | ~30 ₴ + набір | 1S 450 mAh 80C у КЗ теоретично дає понад 30 A. Безпека, не точність. Скляні 5×20 мм не годяться — замалий номінал і більший опір | Рекомендовано |
+| 5 | ACS724-**10A** замість/на додачу до 50A | 1 | ~$3 | Альтернатива п.2: та сама розводка й код, лише 200 mV/A замість 40 | Опційно |
+| 6 | USB-ізолятор (ADuM3160) | 1 | ~$8 | ПК опиняється в спільній землі з силовим трактом | Опційно |
+
+### 3.3.1 Рішення по INA226 — виміряти, а не гадати
+
+Питання «чи вистачить роздільності ACS724-50A» **не має відповіді до Дня 12–13**. Вона залежить від двох невідомих:
+
+- виконання модуля — AB чи AU (різниця в чутливості вдвічі, див. 4.2);
+- фактичний шум ADC ESP32 після multisampling 64–256 вибірок.
+
+Діапазон можливих результатів:
+
+```text
+оптимістично   ±40 mA   → аналогового тракту вистачає, INA226 не потрібен
+песимістично  ±300 mA   → мотори порівнювати неможливо, INA226 обов'язковий
+```
+
+Критерій рішення (розділ 10.1): роздільність має бути щонайменше вдвічі краща за поріг `motor_deviation_warn_percent` в абсолютних амперах, тобто **краще за 100 mA**.
+
+Правило: якщо доставка компонентів займає більше тижня — купити $5 наперед дешевше, ніж простій посеред Фази 2. Якщо доставка швидка — дочекатись вимірювання на Дні 13 і вирішити за фактом.
+
+### 3.3.2 Що чим блокується
+
+| Компонент | Блокує | Не блокує | Крайній строк |
+|---|---|---|---|
+| — нічого не треба — | | **Дні 1–10 і вся Фаза 1b** | — |
+| Замовлені деталі (ACS724, резистори, дроти, BT2.0) | Дні 11–16 | Дні 1–10, Фаза 1b | до Дня 11 |
+| **Мультиметр** | Дні 11–16 і далі все залізо | Дні 1–10, Фаза 1b | **до Дня 11** |
+| INA226 | лише День 14 | Дні 11, 12, 13, 15, 16 | до Дня 19 |
+| Запобіжник | нічого | все | — |
+
+Пояснення:
+
+- **Мультиметр** — єдиний жорсткий блокер. Без нього не можна перевірити напругу на дільниках перед підключенням MCU, а це safety-gate у розділі 12.
+- **INA226** — його день (14) можна просто переставити пізніше. Дні 12–13 дадуть реальний шум ADC, тобто саме ті дані, за якими вирішується, чи він взагалі потрібен (критерій у 3.3.1). Порядок «виміряв → вирішив → купив» правильніший, ніж «купив про всяк випадок».
+- **Запобіжник** — не блокує нічого і вставляється в harness будь-коли, бо стоїть inline і не змінює схему. Поки його немає, компенсація — continuity-перевірка перед кожним підключенням і короткі тести під наглядом (уже в розділі 12).
+
+### 3.3.3 Що НЕ треба купувати
+
+- **BT2.0 pigtails** — одного з двох замовлених extension достатньо: він розрізається навпіл і дає обидві половини harness. Другий — запасний.
+- **Резистори** — за виправленою схемою треба 4 × 10k і 2 × 20k, їде по 10 кожного.
+- **Конденсатори 10 µF** — bypass уже стоїть на модулях ACS724 та INA226; замовлені 100 nF закривають ADC-фільтри.
+- **Level shifter** — INA226 живиться від 3.3 V, рівні I²C збігаються.
+- **Ширша breadboard SYB-1660** — див. Додаток A.
+
+## 3.4 Підтвердити, що вже є вдома
+
+Це не покупки, а чекліст. Якщо чогось немає — додати до кошика.
+
+- [ ] Паяльник (бажано з регулюванням, 60 W+ для 18AWG).
+- [ ] Припій.
+- [ ] Флюс.
+- [ ] Металева пластина або радіатор для 1 Ω 50 W резисторів.
+- [ ] Термостійка/негорюча поверхня для тестів.
+- [ ] Third hand / затискачі для пайки.
+
+**Без мультиметра не підключати Meteor75 Pro до саморобного силового тракту.**
+
+---
+
+# 4. Аналогова схема
+
+## 4.1 Вимірювання напруги 1S батареї
+
+ADC ESP32 з атенюацією 11/12 dB номінально приймає 0–3.1 V, але лінійний приблизно **до 2.4–2.5 V**, далі йде в насичення. Тому дільник підбираємо так, щоб максимум батареї давав ~2.2 V.
+
+Батареї в комплекті — звичайні 1S LiPo з повним зарядом **4.20 V**. Схема все одно розраховується із запасом до 4.35 V (LiHV), бо це нічого не коштує і залишає можливість використати HV-пакети пізніше. Перевірити тип за маркуванням на пакеті: позначка `HV` або `LiHV` означає 4.35 V.
+
+```text
+Battery + ── 10 kΩ ──┬── ESP32/STM32 ADC
+                      |
+                    10 kΩ
+                      |
+                     GND
+
+ADC node ── 100 nF ── GND
+```
+
+```text
+Vadc = Vbattery × 10k / (10k + 10k) = Vbattery / 2
+
+4.35 V → 2.18 V   ✅ запас на LiHV, у лінійній зоні
+4.20 V → 2.10 V   ◄ робочий максимум для наявних батарей
+3.20 V → 1.60 V   ◄ нижня межа
+```
+
+Робочий діапазон ADC виходить 1.60–2.10 V, тобто 0.50 V на всю корисну шкалу. При 12 бітах і атенюації 12 dB це ≈ 640 кроків на діапазон розряду батареї — з великим запасом для порогів у розділі 10.
+
+Формула у firmware:
+
+```c
+battery_voltage = adc_voltage * 2.0f;   // номінал; реальний коефіцієнт — з калібрування
+```
+
+Реальний коефіцієнт треба відкалібрувати мультиметром: резистори 1% дають розкид ±2% на коефіцієнті.
+
+Струм спожитий дільником: 4.35 V / 20 kΩ ≈ 218 µA. Для 300 mAh акумулятора це понад 1000 годин — не проблема, але дільник не має лишатися підключеним до батареї на зберіганні.
+
+RC-фільтр: 100 nF з еквівалентним опором 5 kΩ дає fc ≈ 318 Hz. При sample rate 500 Hz (Nyquist 250 Hz) це прийнятно, але не ідеально. Якщо потрібен чистіший anti-alias — 220 nF (fc ≈ 145 Hz).
+
+## 4.2 Вихід ACS724 і ratiometric-корекція
+
+### Спершу визначити виконання модуля
+
+ACS724 випускається у двох варіантах, і формула розрахунку в них різна. Перевірити при отриманні: подати живлення без навантаження і зміряти `OUT` мультиметром.
+
+| Виконання | Vout при 0 A | Чутливість (50 A) | Ознака |
+|---|---|---|---|
+| **AB** — bidirectional | VCC/2 ≈ 2.50 V | 40 mV/A | міряє струм в обидва боки |
+| **AU** — unidirectional | ≈ 0.50 V | 80 mV/A | лише один напрямок |
+
+Нижче розрахунки для AB як гіршого випадку. Для AU замінити `zero` на 0.5 V (теж ratiometric: `0.1 × VCC`) і подвоїти `SENS_5V0`.
+
+### Основне
+
+Двонаправлений модуль ACS724-50A:
+
+- чутливість ≈ 40 mV/A;
+- вихід при 0 A = **VCC/2** (тобто ~2.5 V при 5 V живлення);
+- і зсув, і чутливість **пропорційні VCC** (ratiometric).
+
+Це означає, що одноразової калібрування нуля недостатньо: USB 5 V гуляє в межах 4.7–5.2 V, і нуль поїде на ±125 mV, що при 40 mV/A дорівнює **±3 A фантомного струму**. Тому VCC треба міряти окремим ADC-каналом.
+
+```text
+ACS724 OUT ── 10 kΩ ──┬── ADC ch1
+                       |
+                     20 kΩ
+                       |
+                      GND
+ADC node ── 100 nF ── GND
+(0 A → 2.5 V → 1.67 V на ADC)
+
+ACS724 VCC ── 10 kΩ ──┬── ADC ch2
+                       |
+                     20 kΩ
+                       |
+                      GND
+ADC node ── 100 nF ── GND
+(5.0 V → 1.67 V на ADC)
+
+Battery + ── 10 kΩ ──┬── ADC ch0     (див. 4.1)
+                     10 kΩ
+                      GND
+```
+
+Розрахунок струму:
+
+```c
+const float DIV      = 3.0f;    // (10k+20k)/20k, уточнити калібруванням
+const float SENS_5V0 = 0.040f;  // V/A при VCC = 5.000 V
+
+float vcc  = adc_ch2 * DIV;
+float vout = adc_ch1 * DIV;
+float zero = vcc * 0.5f;                 // ratiometric zero
+float sens = SENS_5V0 * (vcc / 5.0f);    // ratiometric sensitivity
+float current_a = (vout - zero) / sens;
+```
+
+### Чесна оцінка роздільності цього тракту
+
+```text
+40 mV/A на виході → після дільника ÷3 → 13.3 mV/A на ADC
+ADC ESP32: ~0.8 mV/LSB, шум ±5..15 mV навіть з multisampling
+→ практична похибка струму: ±0.4..1.1 A
+```
+
+Idle current Meteor75 Pro — приблизно 0.3–0.6 A. Поріг `motor_deviation_warn_percent: 15` при ~1.5 A на мотор — це 0.2 A.
+
+**Висновок: цим трактом не можна ухвалювати рішення про відхилення моторів.** Він лишається для транзієнтів (voltage sag, startup spike) і як навчальний об'єкт. Рішення ухвалюються за даними INA226.
+
+Це не провал, а результат вимірювання, який іде в документацію. У розділі 11.1 він зафіксований як частина error budget.
+
+## 4.3 Референсний канал INA226
+
+```text
+INA226:
+  shunt full scale  ±81.92 mV
+  LSB               2.5 µV
+  bus voltage       0–36 V
+  інтерфейс         I²C, адреса 0x40
+```
+
+**Купувати версію модуля з шунтом 0.01 Ω (10 mΩ)** — вона продається готовою, перепаювати нічого не треба.
+
+```text
+діапазон струму       ±8.19 A     (81.92 mV / 10 mΩ)
+роздільність          0.25 mA     (2.5 µV / 10 mΩ)
+падіння при 4 A       40 mV       (1.0% від 4.2 V)
+розсіювання при 4 A   0.16 W      ✅ 2512 тримає 1 W
+розсіювання при 8 A   0.64 W      межа, але лише короткочасно
+```
+
+Для тестів без пропелерів (сумарно 2–4 A на всі чотири мотори) запас достатній.
+
+Обмеження: понад 8.19 A показник упирається в стелю і кліпається. Якщо колись знадобиться більше — замінити на 5 mΩ (±16.4 A, роздільність 0.5 mA).
+
+**Чого купувати не можна:** версію з шунтом **0.1 Ω** — це максимум 0.82 A і 10 W розсіювання при 10 A. Дешеві модулі без вказаного номіналу шунта — теж ризик, номінал треба знати заздалегідь.
+
+Шунт ставиться **high-side**, у розрив `+` після ACS724. Bus voltage знімається з боку навантаження, тобто INA226 заодно дає незалежне вимірювання напруги на дроні — це безкоштовна перехресна перевірка каналу 4.1.
+
+Обмеження: I²C-читання дає ~500–1000 вибірок/с і не бачить мікросекундні транзієнти. Для цього є ACS724.
+
+### Якщо все ж дістався модуль зі 100 mΩ
+
+Потрібно лише в цьому випадку. З версією 0.01 Ω цей розділ пропускається.
+
+Штатний шунт **100 mΩ** у корпусі 2512 дає максимум 0.8 A і 10 W розсіювання при 10 A — його не можна лишати.
+
+**Варіант A — заміна.** Випаяти 100 mΩ, впаяти 5 mΩ у ті самі пади. Чисто, але потрібен фен або впевнена робота паяльником з двох боків.
+
+**Варіант B — паралельно, без випаювання.** Припаяти 5 mΩ зверху на існуючий, пади збігаються.
+
+```text
+R_екв = (5 × 100) / 105 = 4.76 mΩ
+
+Через штатний 100 mΩ піде 5/105 = 4.76% струму:
+  при 10 A → 0.48 A → 0.48² × 0.1 = 23 mW   ✅ безпечно
+Через новий 5 mΩ → 9.52 A → 9.52² × 0.005 = 0.45 W   ✅ у межах 2 W
+```
+
+Точне значення `R_екв` неважливе: воно однаково потрапляє в calibration register INA226 і уточнюється на Дні 15 за законом Ома на резисторі 1 Ω. Внесок 100 mΩ у температурний дрейф — 4.76% від його власного tempco, тобто нехтовно.
+
+Брати 2512 упаковкою по 10 шт — при випаюванні легко зіпсувати один.
+
+### Живлення та I²C
+
+INA226 працює від 2.7–5.5 V, тому живиться від 3.3 V ESP32 — рівні I²C збігаються, level shifter не потрібен. Підтяжки SDA/SCL зазвичай є на модулі; якщо немає — 2 × 10 kΩ на 3.3 V із наявного набору.
+
+## 4.4 Силовий тракт
+
+```text
+1S Battery
+    |
+  BT2.0
+    |
+  Fuse 15–20 A (inline)
+    |
+  ACS724 high-current terminals
+    |
+  Shunt 5 mΩ (INA226 IN+ / IN−)
+    |
+  BT2.0
+    |
+Meteor75 Pro
+
+Battery − ──────────────────────► Meteor75 Pro −   (прямо, товстим проводом)
+```
+
+Правила:
+
+- максимально короткі силові дроти;
+- не використовувати Dupont у силовому тракті;
+- не використовувати breadboard у силовому тракті;
+- перевірити полярність мультиметром перед кожним підключенням;
+- усі відкриті контакти закрити термоусадкою.
+
+### Земля
+
+Це найпоширеніша причина «дивних» показів і спалених плат.
+
+```text
+                  ┌─ силовий GND (18AWG, короткий) ─┐
+Battery − ────────┤                                  ├──── Drone −
+                  └─ star point біля ACS724 ─┐
+                                              │
+                                    сигнальний GND (Dupont)
+                                              │
+                                       ESP32 GND → USB → ПК
+```
+
+- сигнальна земля бере точку **один раз**, біля ACS724, і не паралелиться з силовою;
+- струм дрона ніколи не тече через Dupont або MB102;
+- ПК опиняється в спільній землі з батареєю — це працює, але при помилці в монтажі ноутбук у контурі. Якщо є USB-ізолятор, поставити його на лінію ESP32.
+
+## 4.5 Pin map — ESP32-WROOM-32 DevKit
+
+Плата: **ESP32-WROOM-32** (Xtensa LX6, dual-core, Wi-Fi). Головне правило: **тільки ADC1** — ADC2 недоступний, коли активний Wi-Fi драйвер.
+
+| Сигнал | GPIO | Канал | Примітка |
+|---|---|---|---|
+| Battery voltage | **GPIO34** | ADC1_CH6 | input-only, без внутрішніх підтяжок — ідеально для ADC |
+| ACS724 OUT | **GPIO35** | ADC1_CH7 | input-only |
+| ACS724 VCC monitor | **GPIO32** | ADC1_CH4 | |
+| INA226 SDA | GPIO21 | — | I²C0, default |
+| INA226 SCL | GPIO22 | — | I²C0, default |
+| Status LED | GPIO2 | — | вбудований синій. Strapping pin: при прошивці має бути вільним |
+| Кнопка START | GPIO4 | — | внутрішня підтяжка + зовнішній фільтр |
+| Buzzer | GPIO25 | — | опційно |
+| UART CLI | GPIO1 / GPIO3 | — | UART0 через USB-UART міст |
+| Живлення ACS724 | пін `5V` / `VIN` | — | 5 V напряму з USB |
+
+### Піни, які не можна чіпати
+
+| GPIO | Чому |
+|---|---|
+| 6, 7, 8, 9, 10, 11 | підключені до SPI-флеш, використання = кирпич |
+| 0 | strapping: LOW при старті → режим прошивки |
+| 12 | strapping MTDI: HIGH при старті → неправильна напруга флеш |
+| 15, 5 | strapping, впливають на boot log |
+| 2 | strapping, але як вихід після старту працює нормально |
+
+### Особливості ADC на цьому чипі
+
+- Атенюація в IDF 5.x — `ADC_ATTEN_DB_12` (стара назва `DB_11`).
+- Схема калібрування для ESP32 classic — `ADC_CALI_SCHEME_VER_LINE_FITTING` (не curve fitting, той для S2/S3).
+- eFuse: більшість модулів мають записаний `Vref`, деякі — Two Point. Перевірити на Дні 12 і записати, яка саме схема доступна.
+- Практичний лінійний діапазон — приблизно 0.15–2.45 V. Саме тому дільник розрахований на 2.10 V при 4.20 V (розділ 4.1).
+- Немає внутрішнього буфера на вході ADC: джерело має бути низькоомним, звідси дільники на 10 kΩ, а не на 100 kΩ.
+
+---
+
+# 5. Тестове навантаження
+
+## Один резистор
+
+```text
+R = 1 Ω
+I ≈ 4.2 V / 1 Ω ≈ 4.2 A
+P ≈ 17.6 W
+```
+
+## Два резистори паралельно
+
+```text
+Req = 0.5 Ω
+I ≈ 4.2 V / 0.5 Ω ≈ 8.4 A
+Ptotal ≈ 35 W
+```
+
+Навіть при потужності нижче заявлених 50 W резистори сильно нагріваються.
+
+Обов'язково:
+
+- прикрутити до металевої пластини/радіатора;
+- не торкатися під час і одразу після тесту;
+- робити короткі тести (10–20 с), між ними пауза;
+- не залишати батарею без нагляду.
+
+Резистивне навантаження — єдиний спосіб відкалібрувати струм за законом Ома незалежно від обох сенсорів: міряємо напругу і опір мультиметром, отримуємо очікуваний струм, порівнюємо з ACS724 та INA226.
+
+---
+
+# 6. Структура репозиторію
+
+```text
+dronebench/
+├── firmware/
+│   ├── core/
+│   │   ├── measurements/
+│   │   ├── diagnostics/
+│   │   ├── protocol/
+│   │   └── state_machine/
+│   ├── platform/
+│   │   ├── esp32/
+│   │   ├── stm32/
+│   │   └── host/
+│   ├── app/
+│   └── tests/
+├── tools/
+│   ├── serial_logger/
+│   ├── report_generator/
+│   └── simulator/
+├── test_profiles/
+├── data/
+├── docs/
+└── README.md
+```
+
+## Portable data structures
+
+```c
+typedef struct {
+    uint64_t timestamp_us;
+    float    voltage_v;
+    float    current_a;       // з обраного джерела
+    float    current_ref_a;   // INA226, NAN якщо недоступний
+} power_sample_t;
+
+typedef struct {
+    float    min_voltage_v;
+    float    max_current_a;
+    float    avg_current_a;
+    float    consumed_mah;
+    float    consumed_wh;
+    uint64_t duration_us;
+    uint32_t sample_count;
+} session_metrics_t;
+```
+
+## Platform interface
+
+```c
+uint64_t platform_time_us(void);
+bool platform_adc_read_voltage(float *value);
+bool platform_adc_read_current(float *value);
+bool platform_ref_read_current(float *value);   // INA226
+void platform_uart_write(const char *data, size_t size);
+void platform_watchdog_feed(void);
+void platform_status_led_set(bool on);
+```
+
+---
+
+# 7. Telemetry і CLI
+
+## UART telemetry
+
+Перед потоком вибірок надсилається заголовок із версією протоколу — щоб Python-парсер міг відмовитись від несумісного формату замість тихого неправильного розбору.
+
+```text
+TLM,v=1,fields=time_us|voltage_v|current_a|current_ref_a|power_w|used_mah
+SAMPLE,time_us=1000000,voltage_v=4.083,current_a=0.42,current_ref_a=0.397,power_w=1.62,used_mah=0.12
+```
+
+## Команди
+
+```text
+help
+status
+version
+start
+stop
+reset
+calibrate-voltage
+calibrate-current-zero
+set sample-rate 500
+set low-voltage 3.2
+simulate normal
+simulate motor4_fail
+```
+
+Значення за замовчуванням для `sample-rate` — 500 Hz, як у профілі (розділ 11).
+
+Пізніше додати binary protocol:
+
+```text
+SOF | VERSION | TYPE | LENGTH | PAYLOAD | CRC16
+```
+
+---
+
+# 8. Що можна робити вже зараз лише з ESP32
+
+До приїзду деталей доступні Фаза 1 і Фаза 1b — це приблизно 40% проєкту.
+
+## Етап A — сьогодні
+
+1. Встановити ESP-IDF.
+2. Створити Git repository.
+3. Створити структуру каталогів.
+4. Зібрати та прошити `hello_world`.
+5. Вивести firmware version, build date, chip information, reset reason.
+6. Зробити перший commit.
+
+## Етап B — без сенсорів
+
+1. UART CLI.
+2. Команди `help`, `status`, `version`.
+3. Безпечний parser без `strcpy`.
+4. Unit-тести parser на PC.
+5. Fake measurement provider.
+6. Симуляція voltage/current.
+7. Розрахунок power, mAh і Wh.
+8. Session state machine.
+9. Fault manager.
+10. CSV telemetry.
+
+## Етап C — Python
+
+1. Serial reader.
+2. Parser telemetry з перевіркою версії.
+3. CSV file.
+4. Graph voltage/current/power.
+5. Session summary.
+6. Pass/Fail rules.
+7. Симульований звіт із помилкою `motor4_fail`.
+
+## Етап D — FreeRTOS
+
+```text
+measurement_task
+      |
+measurement_queue
+      |
+processing_task ─── communication_task
+```
+
+Не створювати багато tasks. Не використовувати випадкові глобальні змінні.
+
+## Етап E — MSP, теж уже можливий
+
+Потребує лише дрона, батареї та USB-кабелю — усе це вже є. Див. Фазу 1b.
+
+---
+
+# 9. План по фазах
+
+## ФАЗА 1 — Software, без заліза (Дні 1–10)
+
+### День 1 — ESP-IDF і repository
+repository; project structure; build; flash; UART logs; version information.
+**Done:** ESP32 стабільно збирається і запускається.
+
+### День 2 — UART CLI
+line buffer; command table; `help/status/version`; invalid input; overflow handling.
+
+### День 3 — portable core
+platform API; core без залежності від ESP-IDF; host build; unit tests.
+
+### День 4 — simulated measurements
+fake voltage/current source; timestamps; sample generation; fault injection.
+
+### День 5 — calculations
+power; min voltage; peak current; average current; mAh; Wh.
+
+### День 6 — session state machine
+
+```text
+IDLE → PRECHECK → RUNNING → { WARNING | FAILED } → COMPLETE
+```
+
+### День 7 — telemetry
+text format; version header; parser tests; malformed frame handling.
+
+### День 8 — Python logger
+serial connection; reconnect; CSV; session directory.
+
+### День 9 — graphs and report
+voltage graph; current graph; power graph; summary; Pass/Fail.
+
+### День 10 — FreeRTOS cleanup
+measurement task; processing task; communication task; queue; watchdog concept.
+
+**Milestone 1:** повний simulated test без hardware.
+
+## ФАЗА 1b — MSP spike (паралельно з Днями 8–10)
+
+Потрібні лише Meteor75 Pro, 1S батарея і USB-кабель. Пропелери зняті.
+
+Це найризикованіший пункт усього проєкту, тому він перевіряється **до** того, як буде витрачено час на аналогову частину.
+
+### Крок 1 — читання
+Підключення по MSP через USB; `MSP_API_VERSION`, `MSP_FC_VARIANT`, `MSP_BOARD_INFO`; статус сенсорів; arming flags.
+
+### Крок 2 — motor override
+`MSP_SET_MOTOR` при знятих пропелерах і **знятій** батареї — перевірити, чи FC взагалі приймає команду.
+
+### Крок 3 — головне питання
+Betaflight має захист: override моторів скидається, якщо MSP-команди перестають надходити. Треба експериментально встановити:
+
+- чи є timeout і який він;
+- з якою періодичністю runner мусить повторювати `MSP_SET_MOTOR`;
+- чи вдається утримувати сталий throttle N секунд поспіль;
+- що відбувається при обриві USB під час override.
+
+**Milestone 1b:** доведено, що керований відтворюваний motor test у принципі можливий. Якщо ні — Дні 19–21 треба перепроєктувати, і краще дізнатись це зараз.
+
+## ФАЗА 2 — Analog front-end (Дні 11–16, після приїзду деталей)
+
+### День 11 — монтаж
+Дільники на MB102; заміна шунта на INA226; star ground; continuity test; перевірка напруг **без дрона**, від лабораторного джерела або зарядженої батареї через резистор.
+
+### День 12 — ADC напруги
+Конфігурація ADC1; multisampling; eFuse Vref calibration; порівняння з мультиметром у 5 точках (3.2 / 3.5 / 3.8 / 4.1 / 4.35 V); розрахунок реального коефіцієнта дільника; фіксація похибки.
+
+### День 13 — ACS724 zero + ratiometric
+Вимірювання VCC каналом ch2; no-current offset; шум за 10 с; порівняння moving average та IIR; збереження коефіцієнтів.
+
+### День 14 — INA226
+I²C bring-up; calibration register під 5 mΩ; читання shunt/bus/current/power; порівняння bus voltage з каналом 4.1.
+
+### День 15 — resistive load test
+Один 1 Ω резистор; короткий тест; очікуваний струм за законом Ома; порівняння ACS724 vs INA226 vs розрахунок; спостереження нагріву; CSV-звіт.
+
+### День 16 — higher load + error budget
+Два 1 Ω паралельно, якщо безпечно; voltage sag; peak current; повторюваність 5 прогонів; **заповнити таблицю error budget у розділі 11.1 реальними числами**.
+
+**Milestone 2:** валідовані voltage/current вимірювання з відомою похибкою.
+
+## ФАЗА 3 — Дрон (Дні 17–21)
+
+### День 17 — Meteor75 precheck
+Зняти пропелери; backup Betaflight config (`diff all` у файл); polarity check; continuity check; power-on test; idle current baseline на 3 батареях.
+
+### День 18 — інтеграція MSP у runner
+Перенести результати Фази 1b у Python runner; синхронізація часу між двома USB-потоками: ESP32 шле монотонний `time_us`, PC ставить свій timestamp, періодичний ping-echo оцінює offset і skew. Без цього події «мотор стартував» і «струм зріс» неможливо звести.
+
+### День 19 — motor test
+Мотори 1–4 окремо; однаковий профіль команд; без пропелерів; профіль струму по INA226; медіана і відхилення.
+
+### День 20 — diagnostic rules
+Мотор не стартує; підвищений струм мотора; battery sag; FC reboot; sensor timeout.
+
+### День 21 — classification
+PASS; REPAIR_MINOR; REPAIR_ELECTRONICS; UNSAFE; UNKNOWN.
+
+**Milestone 3:** реальний діагностичний звіт Meteor75 Pro.
+
+## ФАЗА 4 — STM32 (окремий блок, реалістично 8–10 днів)
+
+Не входить у перші 21 день. Починається після Milestone 3.
+
+1. **NUCLEO bring-up** — CubeIDE/CMake; UART; ST-LINK; breakpoints; registers; reset reason.
+2. **ADC + timer + DMA** — voltage ADC; current ADC; timer trigger; DMA circular buffer; calibration.
+3. **Portable core on STM32** — той самий core; та сама telemetry; той самий Python logger; watchdog; порівняння результатів ESP32 vs STM32 на однаковому навантаженні.
+4. **CAN** — опційно, якщо лишиться час.
+
+## ФАЗА 5 — CI і демо
+
+1. **Tests and CI** — host unit tests; parser tests; calculation tests; static analysis; ESP32 build; STM32 build; artifacts.
+2. **Portfolio demo** —
+   1. Connect analyzer.
+   2. Run precheck.
+   3. Show startup/idle current.
+   4. Detect FC.
+   5. Test four motors without propellers.
+   6. Generate report.
+   7. Explain one real bug.
+   8. Show ESP32 and STM32 implementations.
+   9. Explain error budget, limitations and safety.
+
+---
+
+# 10. Pass/Fail profile
+
+```yaml
+profile: meteor75_pro_1s
+sample_rate_hz: 500
+current_source: ina226        # acs724 | ina226
+
+limits:
+  battery_min_v: 3.20
+  battery_max_v: 4.20        # 4.35 для LiHV-пакетів
+  battery_implausible_v: 4.45  # вище — це або HV-пакет, або збита калібровка
+  startup_current_max_a: TBD_AFTER_BASELINE
+  idle_current_max_a: TBD_AFTER_BASELINE
+  motor_deviation_warn_percent: 15
+  motor_deviation_fail_percent: 30
+
+safety:
+  props_removed: true
+  precheck_required: true
+  stop_on_sensor_error: true
+  stop_on_undervoltage: true
+  stop_on_msp_timeout: true
+```
+
+Порогові значення не вигадувати. Спочатку зібрати baseline на справному Meteor75 Pro та кількох батареях (День 17).
+
+## 10.1 Error budget
+
+Цілі фіксуються **до** калібрування. Фактичні значення заповнюються на Дні 16.
+
+| Величина | Ціль | Факт | Метод перевірки |
+|---|---|---|---|
+| Напруга батареї | ±1% або ±30 mV | TBD | 5 точок проти мультиметра |
+| Струм, INA226 | ±2% або ±20 mA | TBD | закон Ома на 1 Ω |
+| Струм, ACS724 + ADC | ±5% або ±150 mA | TBD | те саме, паралельно |
+| Роздільність струму, INA226 | ≤ 1 mA | TBD | шум на нульовому струмі |
+| Роздільність струму, ACS724 | ≤ 100 mA | TBD | те саме |
+| Похибка mAh за 60 с | ±3% | TBD | проти INA226-інтегратора |
+
+Правило: рішення про відхилення мотора ухвалюється лише тим каналом, чия роздільність щонайменше вдвічі краща за поріг `motor_deviation_warn_percent` у абсолютних амперах.
+
+---
+
+# 11. Основні функції версії 1.0
+
+## Power
+
+battery voltage; startup current; idle current; peak current; power; min voltage; voltage sag; consumed mAh; consumed Wh; sensor timeout; brownout detection; розбіжність між AFE і reference каналами.
+
+## Flight controller
+
+connection status; firmware/target; sensor presence; arming flags; receiver/failsafe where available.
+
+## Motors
+
+run motor 1–4 individually; identical test profile; current profile; deviation from median; warning/fail; recommended next test.
+
+## Report
+
+```text
+Device ID
+Firmware
+Test profile
+Battery
+Power-on result
+Idle current
+Motor results
+Observed failures
+Likely causes
+Recommended next test
+Measurement uncertainty
+Overall category
+```
+
+---
+
+# 12. Safety checklist
+
+Before every power test:
+
+- [ ] Propellers removed.
+- [ ] Battery visually inspected.
+- [ ] Correct BT2.0 polarity.
+- [ ] Fuse installed and rated correctly.
+- [ ] No short circuit by continuity check.
+- [ ] ACS724 power terminals and shunt are not routed through breadboard.
+- [ ] Signal ground taken from a single star point.
+- [ ] ADC input voltage checked with multimeter before connecting the MCU.
+- [ ] Load resistor attached to metal plate.
+- [ ] Test area is nonflammable.
+- [ ] Battery is never left unattended.
+- [ ] Emergency disconnect is reachable.
+
+Never:
+
+- run 10″ propellers on a desk;
+- use Dupont in a motor power path;
+- pass motor current through MB102;
+- connect an unknown 5 V analog output directly to a 3.3 V ADC;
+- rely on a one-time zero calibration for a ratiometric sensor;
+- claim a component has failed without an isolation test.
+
+---
+
+# 13. Відомі ризики і відкриті питання
+
+| # | Ризик | Коли з'ясується | План B |
+|---:|---|---|---|
+| 1 | Betaflight скидає motor override по timeout, керований тест неможливий | Фаза 1b, День 8–10 | Тест через RC-канали / MSP RX override замість прямого motor override |
+| 2 | Роздільності ACS724 не вистачає навіть на idle current | День 15 | Уже закладено: рішення ухвалює INA226 |
+| 3 | ADC ESP32 нелінійний навіть у 0.15–2.4 V | День 12 | Таблиця корекції по 5 точках або перехід на INA226 як основний |
+| 4 | Синхронізація двох USB-потоків дає jitter > 10 ms | День 18 | Мотор-події позначати самим ESP32 через GPIO-тригер від runner |
+| 5 | 5 mΩ шунт разом з ACS724 і роз'ємами дає помітне падіння напруги | День 15 | Виміряти сумарний опір тракту і врахувати в звіті |
+| 6 | Конкретна плата ESP32 має інший ADC (S3/C3) | День 1 | Переписати pin map, решта коду не залежить |
+
+---
+
+# 14. Definition of Done
+
+Проєкт готовий, коли:
+
+- ESP32 firmware має portable core;
+- voltage/current перевірені мультиметром;
+- ACS724 працює з ratiometric-корекцією по VCC;
+- INA226 працює як референс, розбіжність двох каналів задокументована;
+- таблиця error budget (10.1) заповнена реальними числами;
+- Python writes CSV and report;
+- simulated faults проходять автоматичні тести;
+- Meteor75 Pro запускається через стенд;
+- чотири мотори тестуються однаково без пропелерів;
+- система знаходить аномалію та пропонує next test;
+- STM32 використовує той самий core;
+- STM32 ADC працює через timer/DMA;
+- є watchdog;
+- є unit tests;
+- є CI;
+- README дозволяє повторити стенд;
+- у документації чесно описані обмеження та похибки.
+
+---
+
+# 15. Подальша ітерація — 10″ FPV
+
+Поки нічого не купувати.
+
+Спочатку завершити 1S-версію і визначити:
+
+- 6S чи 8S;
+- точний ESC;
+- battery connector;
+- очікуваний continuous/peak current;
+- bench test procedure;
+- вимоги до fuse, anti-spark і emergency cutoff.
+
+Для 10″ буде окремий high-current cartridge:
+
+- XT90S;
+- 10AWG;
+- fuse;
+- contactor/emergency cutoff;
+- ACS724 50 A тут нарешті доречний за діапазоном;
+- temperature monitoring;
+- механічний корпус;
+- захисний стенд.
+
+Software core, Python, reports, test profiles, ESP32 і STM32 залишаються спільними.
+
+---
+
+# 16. Короткий опис для співбесіди
+
+> Я розробив automated test equipment для FPV-електроніки. Система вимірює напругу та струм через власний аналоговий front-end і паралельно через незалежний I²C-референс, що дозволило кількісно оцінити похибку власного тракту й обґрунтовано вибрати, який канал може ухвалювати діагностичні рішення. Стенд виконує precheck, читає flight-controller status по MSP, запускає стандартизовані motor tests без пропелерів, порівнює current profiles та формує Pass/Fail-звіт із можливими причинами й наступним діагностичним кроком. Перша реалізація створена на ESP32/ESP-IDF, після чого portable core перенесений на STM32F446 із timer-triggered ADC, DMA, UART і watchdog. Python application виконує orchestration, CSV logging та report generation.
+
+---
+
+# Додаток A — чому вистачає однієї MB102 830 points
+
+Breadboard використовується **тільки** для сигнальної частини:
+
+- дільник напруги батареї;
+- дільник виходу ACS724;
+- дільник VCC-моніторингу;
+- RC-фільтри;
+- кнопка, LED, buzzer;
+- підключення INA226 по I²C.
+
+Через MB102 не проходить струм дрона.
+
+```text
+СИЛОВА ЧАСТИНА — поза breadboard:
+Battery → BT2.0 → fuse → ACS724 → shunt → BT2.0 → Drone
+
+СИГНАЛЬНА ЧАСТИНА — на MB102:
+Battery sense → divider → ADC
+ACS724 OUT    → divider → ADC
+ACS724 VCC    → divider → ADC
+INA226        → I²C
+GND усіх модулів → star point
+```
+
+ESP32 або Nucleo необов'язково вставляти в breadboard — краще покласти поруч і під'єднати Dupont-проводами. Ширшу SYB-1660 купувати не потрібно.

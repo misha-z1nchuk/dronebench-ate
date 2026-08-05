@@ -1,0 +1,5 @@
+-std=c11
+-Wall
+-Wextra
+-Ifirmware/core/include
+-Ifirmware/tests

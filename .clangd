@@ -1,0 +1,10 @@
+# ESP-IDF compiles with xtensa-esp32-elf-gcc and passes a few flags that only
+# GCC understands. clangd refuses the whole translation unit when it meets an
+# unknown flag, so they are stripped here. All four affect code generation, not
+# parsing — the editor loses nothing by ignoring them.
+CompileFlags:
+  Remove:
+    - -mlongcalls
+    - -fno-tree-switch-conversion
+    - -fno-shrink-wrap
+    - -fstrict-volatile-bitfields

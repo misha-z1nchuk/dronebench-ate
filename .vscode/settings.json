@@ -1,0 +1,21 @@
+{
+    // Two IntelliSense engines fighting over the same files produce duplicate
+    // diagnostics and stalls. clangd wins here: it reads compile_commands.json
+    // natively and indexes lazily, where cpptools tries to walk the whole
+    // ESP-IDF tree up front and hangs on "Loading...".
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "clangd.arguments": [
+        "--background-index",
+        "--completion-style=detailed",
+        // Auto-inserting headers guesses wrong constantly in embedded code.
+        "--header-insertion=never",
+        // Lets clangd ask the real cross-compiler where its system headers
+        // live and which macros it predefines. Without this, anything behind
+        // a GCC builtin or an Xtensa-specific define resolves incorrectly.
+        "--query-driver=${userHome}/.espressif/tools/**/bin/xtensa-esp32-elf-*"
+    ],
+    "files.associations": {
+        "*.h": "c"
+    },
+    "cmake.sourceDirectory": "${workspaceFolder}/firmware/app/esp32"
+}
