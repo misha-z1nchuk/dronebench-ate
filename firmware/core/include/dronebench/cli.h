@@ -91,16 +91,40 @@ struct cli {
 };
 
 /*
+ * Prepares cli for use. The caller owns the storage; this never allocates.
+ *
+ * Must leave every field defined, including the empty line buffer — a caller
+ * declaring `cli_t cli;` as a local gets stack garbage, and an init that only
+ * assigns the arguments would leave the length field pointing somewhere
+ * outside the buffer. Do not rely on the caller having zeroed the struct.
+ *
  * commands must outlive the cli — the table is normally a file-scope
  * static const array, not a stack local.
  */
 void cli_init(cli_t *cli, const cli_command_t *commands, size_t command_count,
               cli_output_fn output, void *output_ctx);
 
+/*
+ * Consumes one received character. This is where the contract at the top of
+ * this file is implemented: buffering, editing keys, and end-of-line.
+ *
+ * Safe to call from an interrupt handler only if the command handlers are —
+ * dispatch happens synchronously, inside this call, the moment a line ends.
+ */
 void cli_feed_char(cli_t *cli, char c);
+
+/*
+ * Consumes a block of received characters, exactly as if each byte had been
+ * passed to cli_feed_char() in order. Behaviour must be identical either way:
+ * a line split across two UART reads has to parse the same as a line that
+ * arrived whole.
+ *
+ * size is explicit rather than NUL-terminated, because UART data is not a C
+ * string — it may contain any byte, including zero.
+ */
 void cli_feed(cli_t *cli, const char *data, size_t size);
 
-/* Passes text straight to the output callback. */
+/* Passes text straight to the output callback. Does nothing if none is set. */
 void cli_write(cli_t *cli, const char *text);
 
 /*

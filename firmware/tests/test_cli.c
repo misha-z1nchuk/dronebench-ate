@@ -163,6 +163,46 @@ void test_cli(void)
         CHECK_STR(g_fx.out, "ERR,unknown_command,nosuch\n");
     }
 
+    TF_CASE("the buffer is cleared after every line, whatever happened to it");
+    {
+        setup(&cli);
+
+        /* A rejected line must not leak into the next one. An operator types
+           commands back to back; if a typo poisoned the buffer, the CLI would
+           stay broken until reboot — with a motor possibly still spinning. */
+        feed(&cli, "nosuch\n");
+        memset(&g_fx, 0, sizeof g_fx);
+        feed(&cli, "version\n");
+        CHECK_INT(g_fx.dispatches, 1);
+        CHECK_STR(g_fx.argv[0], "version");
+
+        /* Same for a line that held only whitespace. */
+        feed(&cli, "   \n");
+        memset(&g_fx, 0, sizeof g_fx);
+        feed(&cli, "status\n");
+        CHECK_INT(g_fx.dispatches, 1);
+        CHECK_STR(g_fx.argv[0], "status");
+
+        /* And after a command that ran successfully. */
+        feed(&cli, "set a b\n");
+        memset(&g_fx, 0, sizeof g_fx);
+        feed(&cli, "version\n");
+        CHECK_INT(g_fx.dispatches, 1);
+        CHECK_INT(g_fx.argc, 1);
+        CHECK_STR(g_fx.argv[0], "version");
+
+        /* And after a line rejected for having too many arguments. This is
+           the dangerous one: the leftover text still starts with a valid
+           command name, so a parser that keeps it does not report an error —
+           it silently runs the *previous* command instead of the new one. */
+        feed(&cli, "set a b c d e f g h\n");
+        memset(&g_fx, 0, sizeof g_fx);
+        feed(&cli, "version\n");
+        CHECK_INT(g_fx.dispatches, 1);
+        CHECK_STR(g_fx.argv[0], "version");
+        CHECK_STR(g_fx.out, "");
+    }
+
     TF_CASE("an over-long line is reported and the parser recovers");
     {
         char big[200];
@@ -237,7 +277,7 @@ void test_cli(void)
         setup(&cli);
         cli_print_help(&cli);
         CHECK_STR(g_fx.out,
-                  "\n"
+                  "version - print firmware version\n"
                   "status - print bench status\n"
                   "set - set a parameter\n");
     }
