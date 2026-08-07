@@ -10,6 +10,9 @@
 #include <stdio.h>
 
 #include "cli_uart.h"
+#include "dronebench/platform.h"
+#include "platform_esp32.h"
+
 #include "esp_chip_info.h"
 #include "esp_idf_version.h"
 #include "esp_system.h"
@@ -112,15 +115,9 @@ static void cmd_version(cli_t *cli, int argc, char **argv) {
   (void)argc;
   (void)argv;
 
-  /* TODO(day2): reply with firmware version and build date, in the same
-   * key=value shape the parser already uses for errors:
-   *
-   *     OK,version,fw=0.1.0,built=Aug  6 2026
-   *
-   * Build the line with snprintf into a local buffer, then cli_write() it.
-   * snprintf returns the length it WANTED to write — compare against the
-   * buffer size to detect truncation instead of shipping a cut-off reply.
-   */
+  /* Every part is a compile-time constant, so adjacent string literals are
+     concatenated by the compiler. No buffer, no formatting, nothing that can
+     be truncated at runtime. */
   cli_write(cli, "OK,version,fw=" FW_VERSION ",built=" __DATE__ "\n");
 }
 
@@ -128,21 +125,13 @@ static void cmd_status(cli_t *cli, int argc, char **argv) {
   (void)argc;
   (void)argv;
 
-  /* TODO(day2): report what the bench is doing.
-   *
-   * There is no session state machine yet — that is day 6. Until then the two
-   * numbers worth having are uptime and free heap: together they reveal a
-   * silent reboot and a slow leak, the two failures that would otherwise be
-   * discovered halfway through a motor test.
-   *
-   *     OK,status,uptime_s=41,heap_free=253120
-   *
-   * esp_timer_get_time() returns microseconds since boot as int64_t and needs
-   * esp_timer.h. esp_get_free_heap_size() is already available here.
-   */
+  /* No session state machine yet — that is day 6. Until then these two
+     numbers are the useful ones: together they reveal a silent reboot and a
+     slow leak, the two failures that would otherwise be discovered halfway
+     through a motor test. */
   cli_write(cli, "OK,status,uptime_s=");
   char buf[64];
-  snprintf(buf, sizeof(buf), "%" PRIi64, esp_timer_get_time() / 1000000);
+  snprintf(buf, sizeof(buf), "%" PRIi64, platform_time_us() / 1000000);
   cli_write(cli, buf);
   cli_write(cli, ",heap_free=");
   snprintf(buf, sizeof(buf), "%" PRIu32, esp_get_free_heap_size());
@@ -158,6 +147,8 @@ static const cli_command_t COMMANDS[] = {
 
 void app_main(void) {
   print_banner();
+
+  platform_esp32_init();
 
   cli_uart_start(COMMANDS, sizeof COMMANDS / sizeof COMMANDS[0]);
 

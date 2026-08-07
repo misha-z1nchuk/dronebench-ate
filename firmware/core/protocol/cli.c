@@ -1,26 +1,19 @@
 /*
- * TODO(day2): implement against the contract in cli.h.
+ * Command line parser. The contract it implements is in cli.h; the tests in
+ * firmware/tests/test_cli.c are that contract made executable, and win if the
+ * two ever disagree.
  *
- * Run `make test` to see exactly what is expected — the tests in
- * firmware/tests/test_cli.c are the specification.
+ * Rules this file keeps, none of them decoration:
  *
- * Suggested order, each step turns some tests green:
- *
- *   1. cli_init, cli_write            — the plumbing
- *   2. cli_feed_char buffering        — printable chars, backspace, overflow
- *   3. end-of-line handling           — the three branches from the contract
- *   4. tokenizing                     — collapse spaces, respect CLI_ARGS_MAX
- *   5. dispatch                       — table lookup, unknown-command error
- *   6. cli_print_help
- *
- * Constraints that are part of the exercise, not decoration:
- *
- *   - no malloc/free
- *   - no strcpy, strcat, sprintf, gets
- *   - the line buffer is exactly CLI_LINE_MAX bytes and must always end up
- *     NUL-terminated before anyone reads it as a string
- *   - splitting in place is fine and is the usual approach: overwrite each
- *     separator with '\0' and keep a pointer to the token that follows
+ *   - no malloc/free — the bench must behave identically on its first minute
+ *     and its fifth hour
+ *   - no strcpy, strcat, sprintf, gets — none of them know the size of what
+ *     they are writing into
+ *   - the line is split in place: separators are overwritten with NUL and argv
+ *     points into the buffer, so nothing is copied and nothing is allocated
+ *   - the buffer is cleared after every line, whichever way that line ended.
+ *     A parser that stays poisoned after one bad line is a console that cannot
+ *     accept `stop` while a motor is spinning.
  */
 #include "dronebench/cli.h"
 #include <string.h>

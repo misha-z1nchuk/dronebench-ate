@@ -3,5 +3,6 @@
 #define DRONEBENCH_TESTS_H
 
 void test_cli(void);
+void test_platform(void);
 
 #endif /* DRONEBENCH_TESTS_H */

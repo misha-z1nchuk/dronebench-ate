@@ -21,23 +21,38 @@ WARN := -Wall -Wextra $(WARN_ERROR) \
         -Wold-style-definition
 
 CFLAGS := -std=c11 $(WARN) -O1 -g \
-          -Ifirmware/core/include -Ifirmware/tests
+          -Ifirmware/core/include -Ifirmware/platform/host -Ifirmware/tests
 
 BUILD := build
 
 CORE_SRC := $(wildcard firmware/core/*/*.c)
+HOST_SRC := $(wildcard firmware/platform/host/*.c)
 TEST_SRC := $(wildcard firmware/tests/*.c)
-SRC      := $(CORE_SRC) $(TEST_SRC)
+SRC      := $(CORE_SRC) $(HOST_SRC) $(TEST_SRC)
 OBJ      := $(patsubst %.c,$(BUILD)/%.o,$(SRC))
 BIN      := $(BUILD)/run_tests
 
-.PHONY: all test clean
+.PHONY: all test clean check-core
 
 all: test
 
-test: $(BIN)
+test: check-core $(BIN)
 	@echo
 	@./$(BIN)
+
+# The portable core earns its name only as long as nobody quietly includes a
+# vendor header in it. That rule is easy to state, easy to break during a late
+# debugging session, and invisible in review once it has been broken — so it
+# is checked on every test run rather than trusted.
+check-core:
+	@if grep -rn --include='*.c' --include='*.h' \
+	        -E '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](esp_|driver/|freertos/|soc/|hal/|stm32)' \
+	        firmware/core; then \
+	    echo; \
+	    echo "ERROR: firmware/core must not depend on any vendor SDK."; \
+	    echo "Add what you need to platform.h and implement it per target."; \
+	    exit 1; \
+	fi
 
 $(BIN): $(OBJ)
 	@mkdir -p $(dir $@)

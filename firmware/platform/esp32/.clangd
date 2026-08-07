@@ -1,0 +1,9 @@
+# These sources are built by the ESP-IDF project, which lives in a different
+# branch of the tree. clangd searches for a compilation database upwards from
+# the file, so it would never reach firmware/app/esp32/build/ on its own and
+# would fall back to the repo-root compile_flags.txt — which knows nothing
+# about ESP-IDF headers.
+#
+# The path is relative to this file. It only exists after a build.
+CompileFlags:
+  CompilationDatabase: ../../app/esp32/build

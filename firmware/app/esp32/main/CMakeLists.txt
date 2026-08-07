@@ -6,12 +6,15 @@ idf_component_register(
     SRCS "main.c"
          "cli_uart.c"
          "../../../core/protocol/cli.c"
+         "../../../platform/esp32/platform_esp32.c"
     INCLUDE_DIRS "."
                  "../../../core/include"
+                 "../../../platform/esp32"
     # An explicit REQUIRES turns off the special case where `main` implicitly
     # depends on every component in the build. That is worth having — the
     # dependencies become visible and the build stays smaller — but it means
     # anything outside IDF's common requirements has to be listed here.
     REQUIRES esp_driver_uart
+             esp_driver_gpio
              esp_timer
 )
