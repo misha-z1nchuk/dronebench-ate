@@ -31,3 +31,7 @@ data/sessions/
 
 # macOS
 .DS_Store
+
+# Scratch files from unrelated practice — kept on disk, out of the repo
+tempCodeRunnerFile.js
+t.js
