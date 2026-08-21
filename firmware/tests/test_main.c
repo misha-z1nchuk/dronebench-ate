@@ -10,6 +10,7 @@ int main(void)
     test_platform();
     test_cli();
     test_sampler();
+    test_metrics();
 
     return tf_report();
 }

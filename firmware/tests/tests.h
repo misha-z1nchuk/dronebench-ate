@@ -5,5 +5,6 @@
 void test_cli(void);
 void test_platform(void);
 void test_sampler(void);
+void test_metrics(void);
 
 #endif /* DRONEBENCH_TESTS_H */

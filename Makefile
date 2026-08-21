@@ -20,7 +20,11 @@ WARN := -Wall -Wextra $(WARN_ERROR) \
         -Wshadow -Wpointer-arith -Wstrict-prototypes -Wmissing-prototypes \
         -Wold-style-definition
 
-CFLAGS := -std=c11 $(WARN) -O1 -g \
+# -MMD -MP make the compiler emit a .d file listing every header each object
+# depends on. Without them, editing a header changes nothing until the next
+# `make clean` — the build reports success while running the old code, which
+# is a very expensive kind of quiet.
+CFLAGS := -std=c11 $(WARN) -O1 -g -MMD -MP \
           -Ifirmware/core/include -Ifirmware/platform/host -Ifirmware/tests
 
 BUILD := build
@@ -61,6 +65,8 @@ $(BIN): $(OBJ)
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+-include $(OBJ:.o=.d)
 
 clean:
 	rm -rf $(BUILD)
