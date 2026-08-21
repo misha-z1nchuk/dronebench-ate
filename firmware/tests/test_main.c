@@ -11,6 +11,7 @@ int main(void)
     test_cli();
     test_sampler();
     test_metrics();
+    test_session();
 
     return tf_report();
 }
