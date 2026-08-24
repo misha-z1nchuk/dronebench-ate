@@ -12,6 +12,7 @@ int main(void)
     test_sampler();
     test_metrics();
     test_session();
+    test_telemetry();
 
     return tf_report();
 }
