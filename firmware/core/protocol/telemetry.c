@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SAMPLE_FIELDS  3
+#define SAMPLE_FIELDS  4
 #define MAX_FIELDS     12
 
 /* --- encoding ------------------------------------------------------------ */
@@ -34,7 +34,8 @@ static size_t finish(int n, size_t size)
 
 size_t telemetry_encode_header(char *buf, size_t size, uint32_t rate_hz)
 {
-    int n = snprintf(buf, size, "TLM,v=%d,rate_hz=%" PRIu32 ",fields=t_us|v|i\n",
+    int n = snprintf(buf, size,
+                     "TLM,v=%d,rate_hz=%" PRIu32 ",fields=t_us|v|i|i_ref\n",
                      TELEMETRY_VERSION, rate_hz);
 
     return finish(n, size);
@@ -43,9 +44,17 @@ size_t telemetry_encode_header(char *buf, size_t size, uint32_t rate_hz)
 size_t telemetry_encode_sample(char *buf, size_t size,
                                const power_sample_t *sample)
 {
-    int n = snprintf(buf, size, "S,%" PRIu64 ",%.3f,%.3f\n",
+    /* The reference channel rides along at full rate. It is the second,
+       independent path to the same current, and the difference between the two
+       is the bench's own measure of how much to trust either — a comparison
+       the host cannot make if only one of them reaches it.
+
+       It is NAN whenever the INA226 is absent, which prints as "nan" and
+       parses back as NAN. That is deliberate: a missing reading has to stay
+       distinguishable from a reading of zero. */
+    int n = snprintf(buf, size, "S,%" PRIu64 ",%.3f,%.3f,%.3f\n",
                      sample->timestamp_us, (double)sample->voltage_v,
-                     (double)sample->current_a);
+                     (double)sample->current_a, (double)sample->current_ref_a);
 
     return finish(n, size);
 }
@@ -54,13 +63,17 @@ size_t telemetry_encode_summary(char *buf, size_t size,
                                 const telemetry_summary_t *summary)
 {
     int n = snprintf(buf, size,
-                     "U,mah=%.3f,wh=%.4f,vmin=%.3f,imax=%.3f,"
-                     "rej=%" PRIu32 ",gaps=%" PRIu32 ",drop=%" PRIu32 "\n",
+                     "U,n=%" PRIu32 ",mah=%.3f,wh=%.4f,vmin=%.3f,imax=%.3f,"
+                     "sensor=%" PRIu32 ",rej_time=%" PRIu32 ",rej_val=%" PRIu32
+                     ",gaps=%" PRIu32 ",drop=%" PRIu32 "\n",
+                     summary->sample_count,
                      (double)summary->consumed_mah,
                      (double)summary->consumed_wh,
                      (double)summary->min_voltage_v,
-                     (double)summary->max_current_a, summary->rejected,
-                     summary->gaps, summary->dropped);
+                     (double)summary->max_current_a,
+                     summary->sensor_failures, summary->rejected_time,
+                     summary->rejected_value, summary->gaps,
+                     summary->dropped);
 
     return finish(n, size);
 }
@@ -219,13 +232,10 @@ static bool parse_sample(char *body, telemetry_line_t *out)
 
     if (!parse_u64(fields[0], &sample.timestamp_us) ||
         !parse_f32(fields[1], &sample.voltage_v) ||
-        !parse_f32(fields[2], &sample.current_a)) {
+        !parse_f32(fields[2], &sample.current_a) ||
+        !parse_f32(fields[3], &sample.current_ref_a)) {
         return false;
     }
-
-    /* The reference channel is not on the wire at this rate; the summary
-       carries what the firmware made of it. */
-    sample.current_ref_a = 0.0f;
 
     out->kind = TELEMETRY_LINE_SAMPLE;
     out->as.sample = sample;
@@ -234,9 +244,11 @@ static bool parse_sample(char *body, telemetry_line_t *out)
 
 static bool parse_summary(char *body, telemetry_line_t *out)
 {
-    static const char *const KEYS[] = { "mah",  "wh",   "vmin", "imax",
-                                        "rej",  "gaps", "drop" };
-    const uint32_t ALL_SEEN = 0x7Fu; /* seven fields, all required */
+    static const char *const KEYS[] = { "n",        "mah",     "wh",
+                                        "vmin",     "imax",    "sensor",
+                                        "rej_time", "rej_val", "gaps",
+                                        "drop" };
+    const uint32_t ALL_SEEN = 0x3FFu; /* ten fields, all required */
 
     char               *fields[MAX_FIELDS];
     int                 count;
@@ -256,26 +268,35 @@ static bool parse_summary(char *body, telemetry_line_t *out)
         }
 
         if (strcmp(fields[i], KEYS[0]) == 0) {
-            ok = parse_f32(value, &summary.consumed_mah);
+            ok = parse_u32(value, &summary.sample_count);
             seen |= 1u << 0;
         } else if (strcmp(fields[i], KEYS[1]) == 0) {
-            ok = parse_f32(value, &summary.consumed_wh);
+            ok = parse_f32(value, &summary.consumed_mah);
             seen |= 1u << 1;
         } else if (strcmp(fields[i], KEYS[2]) == 0) {
-            ok = parse_f32(value, &summary.min_voltage_v);
+            ok = parse_f32(value, &summary.consumed_wh);
             seen |= 1u << 2;
         } else if (strcmp(fields[i], KEYS[3]) == 0) {
-            ok = parse_f32(value, &summary.max_current_a);
+            ok = parse_f32(value, &summary.min_voltage_v);
             seen |= 1u << 3;
         } else if (strcmp(fields[i], KEYS[4]) == 0) {
-            ok = parse_u32(value, &summary.rejected);
+            ok = parse_f32(value, &summary.max_current_a);
             seen |= 1u << 4;
         } else if (strcmp(fields[i], KEYS[5]) == 0) {
-            ok = parse_u32(value, &summary.gaps);
+            ok = parse_u32(value, &summary.sensor_failures);
             seen |= 1u << 5;
         } else if (strcmp(fields[i], KEYS[6]) == 0) {
-            ok = parse_u32(value, &summary.dropped);
+            ok = parse_u32(value, &summary.rejected_time);
             seen |= 1u << 6;
+        } else if (strcmp(fields[i], KEYS[7]) == 0) {
+            ok = parse_u32(value, &summary.rejected_value);
+            seen |= 1u << 7;
+        } else if (strcmp(fields[i], KEYS[8]) == 0) {
+            ok = parse_u32(value, &summary.gaps);
+            seen |= 1u << 8;
+        } else if (strcmp(fields[i], KEYS[9]) == 0) {
+            ok = parse_u32(value, &summary.dropped);
+            seen |= 1u << 9;
         }
 
         if (!ok) {

@@ -43,11 +43,14 @@
 
 #include "dronebench/types.h"
 
-#define TELEMETRY_VERSION 1
+#define TELEMETRY_VERSION 2
 
 /* Longest line this format can produce, including newline and terminator.
-   The U line is the wide one. */
-#define TELEMETRY_LINE_MAX 128
+   The U line is the wide one: 65 characters of fixed text, five uint32 counters
+   at 10 digits each, and four floats whose width is bounded by physics rather
+   than by the type — roughly 155. Rounded up, because an encoder that starts
+   refusing to emit summaries would do so silently. */
+#define TELEMETRY_LINE_MAX 192
 
 typedef enum {
     TELEMETRY_LINE_NONE = 0,   /* blank or comment — not an error */
@@ -57,14 +60,36 @@ typedef enum {
     TELEMETRY_LINE_BAD,
 } telemetry_line_kind_t;
 
+/*
+ * What the session amounts to so far.
+ *
+ * Every field is cumulative from the start of the session, not per-interval;
+ * the line is merely emitted once a second. A host wanting a per-second rate
+ * differences two consecutive summaries, which it can only do because these
+ * are totals.
+ *
+ * sample_count is here because without it the other numbers are ambiguous: a
+ * session whose sensors never answered reports min_voltage_v as a perfectly
+ * good 0.000 V, indistinguishable from a flat pack. The count is what says
+ * which of the two happened.
+ *
+ * The three refusal counters are kept apart rather than summed, because they
+ * point at three different repairs — dead wiring, a clock that went backwards,
+ * and a reading that was not a finite number. At one line per second the
+ * bytes are free, and a diagnostic bench that knows why it failed and does not
+ * say so is throwing away the answer.
+ */
 typedef struct {
     float    consumed_mah;
     float    consumed_wh;
     float    min_voltage_v;
     float    max_current_a;
-    uint32_t rejected;   /* samples the sampler refused */
-    uint32_t gaps;       /* accepted, but after an over-long interval */
-    uint32_t dropped;    /* taken, but never made it into the port */
+    uint32_t sample_count;     /* accepted, and folded into the figures above */
+    uint32_t sensor_failures;  /* a required channel did not answer */
+    uint32_t rejected_time;    /* the clock did not advance */
+    uint32_t rejected_value;   /* a reading was not a finite number */
+    uint32_t gaps;             /* accepted, but after an over-long interval */
+    uint32_t dropped;          /* taken, but never made it into the port */
 } telemetry_summary_t;
 
 typedef struct {

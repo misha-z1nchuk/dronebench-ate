@@ -48,8 +48,8 @@ void platform_esp32_init(void) {
   };
 
   ESP_ERROR_CHECK(uart_param_config(PLATFORM_CONSOLE_UART_PORT, &uart_conf));
-  ESP_ERROR_CHECK(uart_driver_install(PLATFORM_CONSOLE_UART_PORT,
-                                      PLATFORM_UART_RX_BUFFER, 0, 0, NULL, 0));
+  ESP_ERROR_CHECK(uart_driver_install(
+      PLATFORM_CONSOLE_UART_PORT, PLATFORM_UART_RX_BUFFER, 2048, 0, NULL, 0));
 }
 
 uint64_t platform_time_us(void) {
@@ -68,7 +68,7 @@ uint64_t platform_time_us(void) {
  * find out would cost a board.
  */
 static struct {
-  bool        enabled;
+  bool enabled;
   simulator_t sim;
 } s_source = {
     .enabled = true,

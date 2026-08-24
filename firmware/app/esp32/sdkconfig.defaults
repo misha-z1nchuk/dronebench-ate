@@ -27,3 +27,17 @@ CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 # own. One place to change, and no way for the two to disagree.
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=460800
+
+# The measurement loop runs at 500 Hz, i.e. a 2 ms period. At the default tick
+# rate of 100 Hz the scheduler's resolution is 10 ms, and pdMS_TO_TICKS(2)
+# truncates to zero ticks — which xTaskDelayUntil rejects outright.
+#
+# 1000 Hz is the maximum this port allows and makes one tick 1 ms, so a period
+# is exactly two ticks. The extra 900 tick interrupts per second cost nothing
+# measurable against 240 MHz.
+#
+# Note this only fixes the *scheduling*. Sample timestamps come from
+# esp_timer_get_time() at microsecond resolution, so the integration stays
+# accurate even when a wake-up lands late — which is precisely why the sampler
+# records real timestamps instead of assuming the nominal period.
+CONFIG_FREERTOS_HZ=1000

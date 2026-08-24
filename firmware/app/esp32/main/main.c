@@ -14,6 +14,7 @@
 #include "dronebench/platform.h"
 #include "dronebench/simulator.h"
 #include "platform_esp32.h"
+#include "telemetry_task.h"
 
 #include "esp_chip_info.h"
 #include "esp_idf_version.h"
@@ -128,18 +129,69 @@ static void cmd_status(cli_t *cli, int argc, char **argv) {
   (void)argc;
   (void)argv;
 
-  /* No session state machine yet — that is day 6. Until then these two
-     numbers are the useful ones: together they reveal a silent reboot and a
-     slow leak, the two failures that would otherwise be discovered halfway
-     through a motor test. */
-  cli_write(cli, "OK,status,uptime_s=");
+  /* Assembled once and written once. While a session runs, the telemetry task
+     is putting a line into this same port every 2 ms, and uart_write_bytes is
+     atomic only within a single call — a reply built from five writes comes
+     out with a measurement wedged into the middle of it.
+
+     96 bytes covers the worst case with room to spare: the longest state name
+     is 8 characters, uptime is at most 20 digits and heap at most 10. */
+  char buf[96];
+
+  /* state first: it answers "what is the bench doing", which is the question
+     being asked. uptime and heap are diagnostics — together they reveal a
+     silent reboot and a slow leak, the two failures that would otherwise be
+     found halfway through a motor test. */
+  snprintf(buf, sizeof buf,
+           "OK,status,state=%s,uptime_s=%" PRIi64 ",heap_free=%" PRIu32 "\n",
+           telemetry_state_name(), platform_time_us() / 1000000,
+           esp_get_free_heap_size());
+  cli_write(cli, buf);
+}
+
+/*
+ * start and stop take no arguments, and both report a refusal by naming the
+ * state they were refused from. The session functions return only a bool; the
+ * reason is already in the state machine, so there is nothing to invent —
+ * RUNNING means one is already under way, UNSAFE means the previous result has
+ * not been acknowledged, IDLE means there is nothing to stop.
+ */
+static void cmd_start(cli_t *cli, int argc, char **argv) {
+  (void)argv;
+
   char buf[64];
-  snprintf(buf, sizeof(buf), "%" PRIi64, platform_time_us() / 1000000);
+
+  if (argc != 1) {
+    cli_write(cli, "ERR,usage,start\n");
+    return;
+  }
+
+  if (telemetry_session_start()) {
+    cli_write(cli, "OK,start\n");
+    return;
+  }
+
+  snprintf(buf, sizeof buf, "ERR,start,state=%s\n", telemetry_state_name());
   cli_write(cli, buf);
-  cli_write(cli, ",heap_free=");
-  snprintf(buf, sizeof(buf), "%" PRIu32, esp_get_free_heap_size());
+}
+
+static void cmd_stop(cli_t *cli, int argc, char **argv) {
+  (void)argv;
+
+  char buf[64];
+
+  if (argc != 1) {
+    cli_write(cli, "ERR,usage,stop\n");
+    return;
+  }
+
+  if (telemetry_session_stop()) {
+    cli_write(cli, "OK,stop\n");
+    return;
+  }
+
+  snprintf(buf, sizeof buf, "ERR,stop,state=%s\n", telemetry_state_name());
   cli_write(cli, buf);
-  cli_write(cli, "\n");
 }
 
 static void cmd_simulate(cli_t *cli, int argc, char **argv) {
@@ -183,6 +235,8 @@ static const cli_command_t COMMANDS[] = {
     {"help", "list available commands", cmd_help},
     {"version", "firmware version and build date", cmd_version},
     {"status", "current bench state", cmd_status},
+    {"start", "begin a measurement session", cmd_start},
+    {"stop", "end the current session", cmd_stop},
     {"simulate", "select a simulated profile, or off", cmd_simulate},
 };
 
@@ -201,6 +255,13 @@ void app_main(void) {
   esp_rom_output_tx_wait_idle(PLATFORM_CONSOLE_UART_PORT);
 
   platform_esp32_init();
+
+  /* Before cli_uart_start, not after: this creates the mutex that start, stop
+     and status all take. Accepting commands first leaves a window of a few
+     milliseconds in which a typed command reaches xSemaphoreTake(NULL), and
+     the resulting assert fires inside the kernel — where the backtrace points
+     at FreeRTOS rather than at the order of these two lines. */
+  telemetry_task_start();
 
   cli_uart_start(COMMANDS, sizeof COMMANDS / sizeof COMMANDS[0]);
 
