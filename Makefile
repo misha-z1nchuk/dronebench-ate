@@ -5,6 +5,9 @@
 # platform dependency into the core.
 #
 #   make test     build and run the unit tests        (no board needed)
+#   make venv     create .venv and install pyserial    (once)
+#   make pytest   run the host-tool tests             (no board needed)
+#   make log      record a telemetry session to CSV   (needs board)
 #   make fw       build the ESP32 firmware            (needs ESP-IDF)
 #   make flash    build, flash and open the monitor   (needs board)
 #   make monitor  open the serial monitor             (needs board)
@@ -102,3 +105,36 @@ flash:
 monitor:
 	$(require_idf)
 	idf.py -C $(IDF_PROJECT) monitor
+
+# --- host tools -------------------------------------------------------------
+#
+# The logger parses the same wire format the firmware emits, and refuses the
+# same lines. Its tests need neither a board nor pyserial, so they belong in
+# the same habit as `make test`: run them before believing a change.
+
+TOOLS := tools/serial_logger
+VENV  := .venv
+
+# Prefer the project virtualenv when it exists. macOS ships an
+# externally-managed Python that refuses `pip install` outright (PEP 668), so
+# `make venv` is the supported way to get pyserial. The parser tests need no
+# dependency at all and run under either interpreter.
+PY := $(if $(wildcard $(VENV)/bin/python3),$(VENV)/bin/python3,python3)
+
+.PHONY: venv pytest log
+
+venv:
+	python3 -m venv $(VENV)
+	$(VENV)/bin/pip install --quiet --upgrade pip
+	$(VENV)/bin/pip install --quiet -r $(TOOLS)/requirements.txt
+	@echo "ready: $(VENV)"
+
+pytest:
+	$(PY) -m unittest discover -s $(TOOLS)
+
+# make log                      -> find the board, write to data/sessions/
+# make log ARGS="-p /dev/cu.x"  -> anything logger.py accepts
+log:
+	@test -x $(VENV)/bin/python3 || { \
+	    echo "pyserial is not installed. Run: make venv"; exit 1; }
+	$(PY) $(TOOLS)/logger.py $(ARGS)
