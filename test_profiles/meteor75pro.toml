@@ -1,0 +1,47 @@
+# Test profile for a BetaFPV Meteor75 Pro on 1S LiHV.
+#
+# Section 10 of the plan writes this as YAML. It is TOML here because tomllib
+# has been in the standard library since Python 3.11, and adding PyYAML to
+# every machine that wants to read a report is a poor trade for the same
+# fifteen lines of content. The keys are unchanged, so the mapping back to the
+# plan is one to one.
+#
+# THRESHOLDS ARE NOT TO BE INVENTED. Anything still reading "tbd" has no
+# baseline behind it, and the analysis refuses to judge against it rather than
+# quietly passing — a limit nobody measured cannot fail anything, which makes
+# a green report meaningless. Baselines are collected on day 17 against a known
+# good drone and several batteries.
+
+name = "Meteor75 Pro, 1S LiHV"
+sample_rate_hz = 500
+current_source = "acs724"     # acs724 | ina226
+motor_count = 4
+
+[limits]
+battery_min_v = 3.20
+battery_max_v = 4.35          # LiHV — confirmed by measurement 2026-08-12
+battery_implausible_v = 4.45  # above this it is the calibration, not the pack
+
+startup_current_max_a = "tbd"  # day 17
+idle_current_max_a = "tbd"     # day 17
+
+motor_deviation_warn_percent = 15
+motor_deviation_fail_percent = 30
+
+[analysis]
+# A motor is running when the current sits above this fraction of the way from
+# the idle floor to the peak. Expressed as a fraction rather than in amps so
+# the same profile works before and after the front-end is calibrated, and on
+# a drone that draws twice as much.
+motor_threshold_fraction = 0.5
+
+# Shorter excursions than this are not a motor; they are noise, or the edge of
+# one. Long enough to reject a spike, short enough that a motor which dies
+# after half a second is still seen as having started.
+motor_min_duration_ms = 200
+
+# Peak current is read at this percentile instead of as a maximum. A maximum is
+# one sample: a single ADC glitch or one burst of interference sets it, and the
+# number then describes the noise rather than the motor. A percentile needs one
+# sample in a hundred to agree before it moves.
+peak_percentile = 99.0

@@ -70,8 +70,12 @@ READ_CHUNK = 4096
 # drive EN and IO0 through the auto-reset transistors on boards that have them,
 # and pyserial asserts both on open. On the board in use it does not — a run on
 # 2026-08-24 saw 791 s of uptime survive the open — but a reset would cost the
-# whole session, so the settle and the drain below stay. They cost 1.5 s per
-# run and cover both kinds of board.
+# whole session, so the settle below stays. It covers both kinds of board.
+#
+# It must be spent *reading*, not sleeping. A board already streaming puts
+# 14 kB/s into the driver's buffer, and 1.5 s of nobody draining it overflows
+# that buffer and drops bytes out of the middle of lines. Measured, not
+# theorised: sleeping here produced 16714 mangled lines in one run.
 BOOT_SETTLE_S = 1.5
 
 # The console echoes nothing, so a command is only known to have arrived when
@@ -205,6 +209,12 @@ class StreamConsumer:
         self.assembler = LineAssembler()
         self.line_no = 0
         self.last_console: str | None = None
+        # Telemetry from a session that was already running when this logger
+        # attached. It is not corruption and must not be filed as such — 183
+        # entries of "data before a valid header" in one run buried the six
+        # real ones underneath them. Counted here and reported once.
+        self.discarding = True
+        self.discarded = 0
         self._last_report = time.monotonic()
         self._samples_at_report = 0
 
@@ -212,6 +222,7 @@ class StreamConsumer:
         """A dropped link means the next stream negotiates its version again."""
         self.parser.reset()
         self.assembler = LineAssembler()
+        self.discarding = True
 
     def feed(self, chunk: bytes) -> None:
         for line in self.assembler.feed(chunk):
@@ -219,10 +230,14 @@ class StreamConsumer:
             try:
                 kind, value = self.parser.feed_line(line)
             except ProtocolError as exc:
-                self.writer.error(self.line_no, line, str(exc))
+                if self.discarding:
+                    self.discarded += 1
+                else:
+                    self.writer.error(self.line_no, line, str(exc))
                 continue
 
             if kind is LineKind.HEADER:
+                self.discarding = False
                 self.writer.begin_stream(value.rate_hz)
             elif kind is LineKind.SAMPLE:
                 self.writer.write_sample(value)
@@ -344,20 +359,44 @@ def run_serial(port: str, baud: int, consumer: StreamConsumer,
 
             if profile or start:
                 # Long enough for a board that did reset to have finished
-                # booting, and harmless for one that did not. Either way the
-                # input buffer goes: it holds a banner, or the tail of an
-                # earlier session, and neither belongs in this recording.
-                time.sleep(BOOT_SETTLE_S)
-                handle.reset_input_buffer()
-                writer.event("input buffer dropped before driving the session")
+                # booting, and harmless for one that did not — but spent
+                # reading, so the port never backs up. See BOOT_SETTLE_S.
+                until = time.monotonic() + BOOT_SETTLE_S
+                while time.monotonic() < until:
+                    handle.read(max(1, getattr(handle, "in_waiting", 0)))
+
+                # No reset_input_buffer() here. The drain above has already
+                # emptied it, and flushing a saturated CH340 from the host
+                # side wedged the driver: one run lost the link twelve times
+                # in thirteen seconds, each loss taking the stream with it.
+
+                # Put the bench in a known state before driving it. A session
+                # left running by an earlier run refuses `start` and keeps
+                # streaming into a logger that never saw its header — which
+                # looks like a flood of corrupt data rather than the one thing
+                # it is. ERR here is the normal answer and is not a problem.
+                send_command(handle, "stop", consumer, writer)
+                consumer.reset()
 
             if profile:
                 send_command(handle, f"simulate {profile}", consumer, writer)
             if start:
                 reply = send_command(handle, "start", consumer, writer)
+                if consumer.discarded:
+                    writer.event(
+                        f"{consumer.discarded} telemetry lines from an "
+                        f"earlier session discarded before this one began"
+                    )
+                    consumer.discarded = 0
+                consumer.discarding = False
                 if reply is None or reply.startswith("ERR"):
                     writer.event("the bench refused to start; logging anyway")
-                if duration is not None:
+                # Set once, not on every reconnect. Renewing it here made
+                # --for 13 run for 107 seconds across 24 link drops, each one
+                # pushing the finish line further away — a flag that means
+                # "record this long" quietly turning into "record until the
+                # link behaves".
+                if duration is not None and deadline is None:
                     deadline = time.monotonic() + duration
 
             while True:

@@ -8,6 +8,7 @@
 #   make venv     create .venv and install pyserial    (once)
 #   make pytest   run the host-tool tests             (no board needed)
 #   make log      record a telemetry session to CSV   (needs board)
+#   make report   turn a recording into a report       (no board needed)
 #   make fw       build the ESP32 firmware            (needs ESP-IDF)
 #   make flash    build, flash and open the monitor   (needs board)
 #   make monitor  open the serial monitor             (needs board)
@@ -112,8 +113,9 @@ monitor:
 # same lines. Its tests need neither a board nor pyserial, so they belong in
 # the same habit as `make test`: run them before believing a change.
 
-TOOLS := tools/serial_logger
-VENV  := .venv
+TOOLS   := tools/serial_logger
+REPORTS := tools/report_generator
+VENV    := .venv
 
 # Prefer the project virtualenv when it exists. macOS ships an
 # externally-managed Python that refuses `pip install` outright (PEP 668), so
@@ -121,7 +123,7 @@ VENV  := .venv
 # dependency at all and run under either interpreter.
 PY := $(if $(wildcard $(VENV)/bin/python3),$(VENV)/bin/python3,python3)
 
-.PHONY: venv pytest log
+.PHONY: venv pytest log report
 
 venv:
 	python3 -m venv $(VENV)
@@ -131,6 +133,7 @@ venv:
 
 pytest:
 	$(PY) -m unittest discover -s $(TOOLS)
+	$(PY) -m unittest discover -s $(REPORTS)
 
 # make log                      -> find the board, write to data/sessions/
 # make log ARGS="-p /dev/cu.x"  -> anything logger.py accepts
@@ -138,3 +141,10 @@ log:
 	@test -x $(VENV)/bin/python3 || { \
 	    echo "pyserial is not installed. Run: make venv"; exit 1; }
 	$(PY) $(TOOLS)/logger.py $(ARGS)
+
+# make report SESSION=data/sessions/session_20260824_183054
+# Exit code carries the verdict: 0 pass, 1 warning, 2 fail, 3 inconclusive.
+report:
+	@test -n "$(SESSION)" || { \
+	    echo "usage: make report SESSION=data/sessions/session_..."; exit 1; }
+	$(PY) $(REPORTS)/generate.py $(SESSION) $(ARGS)

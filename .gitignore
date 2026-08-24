@@ -26,6 +26,10 @@ venv/
 # Reference baselines live in data/baselines/ and ARE versioned.
 data/sessions/
 
+# Graphs are regenerated from the CSVs next to them. The text report IS
+# versioned: it diffs, so a change in the rules shows up in review.
+*_plots/
+
 # Editor caches
 .cache/
 

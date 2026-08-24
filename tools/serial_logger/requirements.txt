@@ -1,1 +1,4 @@
+# The logger needs pyserial; the report generator needs matplotlib for
+# graphs only — its rules and its tests run on the standard library alone.
 pyserial>=3.5
+matplotlib>=3.8

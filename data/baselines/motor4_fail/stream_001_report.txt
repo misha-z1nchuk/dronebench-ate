@@ -1,0 +1,96 @@
+==========================================================================
+                       DroneBench ATE — test report                       
+==========================================================================
+generated   2026-08-24 18:52:19
+source      data/baselines/motor4_fail/stream_001_samples.csv
+
+Device ID
+--------------------------------------------------------------------------
+  not available — needs the MSP link (phase 3)
+
+Firmware
+--------------------------------------------------------------------------
+  not available — needs the MSP link (phase 3)
+
+Test profile
+--------------------------------------------------------------------------
+  Meteor75 Pro, 1S LiHV
+  sample rate      500 Hz
+  current source   acs724
+  samples          6000 over 12.00 s
+
+Battery
+--------------------------------------------------------------------------
+  minimum          4.081 V
+  maximum          4.177 V
+  sag under load   0.096 V
+  undervoltage at  3.20 V
+
+Power-on result
+--------------------------------------------------------------------------
+  no startup-current baseline yet — nothing to compare against (day 17)
+
+Idle current
+--------------------------------------------------------------------------
+  measured         0.380 A
+  limit            not set — no baseline yet (day 17)
+
+Motor results
+--------------------------------------------------------------------------
+   #            window     median   peak p99   vs median
+   1    1.08–  3.00 s     1.980 A     1.980 A       +0.0%
+   2    3.58–  5.50 s     1.980 A     1.980 A       +0.0%
+   3    6.08–  8.00 s     1.980 A     1.980 A       +0.0%
+
+  reference        1.980 A (median across 3 motors)
+  expected motors  4
+  medians, not means: the spin-up ramp drags a mean down by however
+  long it lasted, so two identical motors commanded for different times
+  would read differently.
+
+Observed failures
+--------------------------------------------------------------------------
+  [INCONCLUSIVE] Only one current channel was available
+      The reference channel read NaN throughout, so the difference between the two paths — the bench's own measure of how far to trust either — could not be computed.
+  [FAIL] 1 of 4 motors never drew current
+      Only 3 runs of raised current were found where 4 were commanded; expected at 8.58–10.50 s.
+      at 8.58–10.50 s
+
+Likely causes
+--------------------------------------------------------------------------
+  Only one current channel was available:
+      No INA226 fitted. Expected until day 14.
+  1 of 4 motors never drew current:
+      An open motor winding, an unplugged phase, or a dead ESC output. All
+      three are silent in the current trace.
+
+Recommended next test
+--------------------------------------------------------------------------
+  1. Section 10.1 requires the deciding channel to resolve at least twice
+     as finely as the deviation threshold. Until that is measured, motor
+     verdicts carry unknown uncertainty.
+  2. Command the missing motor alone and watch the current. If it is
+     still flat, swap that motor onto a known good ESC output to tell the
+     motor from the driver.
+
+Measurement uncertainty
+--------------------------------------------------------------------------
+  one current channel only. The reference (INA226) read NaN throughout,
+  so the error budget in section 10.1 cannot be evaluated and every
+  current figure here carries unquantified uncertainty.
+
+  firmware counted 6000 accepted, 0 refused,
+  0 periods missed, 0 gaps.
+  its own integration: 1.0 mAh, 0.004 Wh
+  — computed from every sample it took, including any the link lost.
+
+Graphs
+--------------------------------------------------------------------------
+  data/baselines/motor4_fail/stream_001_plots/voltage.png
+  data/baselines/motor4_fail/stream_001_plots/current.png
+  data/baselines/motor4_fail/stream_001_plots/power.png
+  data/baselines/motor4_fail/stream_001_plots/session.png
+
+==========================================================================
+Overall category: FAIL
+==========================================================================
