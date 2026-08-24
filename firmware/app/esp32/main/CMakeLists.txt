@@ -6,6 +6,7 @@ idf_component_register(
     SRCS "main.c"
          "cli_uart.c"
          "telemetry_task.c"
+         "output.c"
          "../../../core/protocol/cli.c"
          "../../../core/protocol/telemetry.c"
          "../../../core/measurements/sampler.c"

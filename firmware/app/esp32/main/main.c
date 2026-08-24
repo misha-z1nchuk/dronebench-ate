@@ -13,6 +13,7 @@
 #include "cli_uart.h"
 #include "dronebench/platform.h"
 #include "dronebench/simulator.h"
+#include "output.h"
 #include "platform_esp32.h"
 #include "telemetry_task.h"
 
@@ -136,17 +137,58 @@ static void cmd_status(cli_t *cli, int argc, char **argv) {
 
      96 bytes covers the worst case with room to spare: the longest state name
      is 8 characters, uptime is at most 20 digits and heap at most 10. */
-  char buf[96];
+  char buf[160];
 
   /* state first: it answers "what is the bench doing", which is the question
      being asked. uptime and heap are diagnostics — together they reveal a
      silent reboot and a slow leak, the two failures that would otherwise be
      found halfway through a motor test. */
+  /* The four loss counters are here rather than only in the telemetry summary
+     because they answer a question asked between tests, not during one: did
+     this bench keep up? missed and qdrop are the pipeline falling behind
+     itself; odrop is the link. ohw against OUTPUT_QUEUE_DEPTH says whether
+     the queue was sized well — the same question the stack high-water marks
+     answer for stacks, and equally unanswerable by guessing. */
   snprintf(buf, sizeof buf,
-           "OK,status,state=%s,uptime_s=%" PRIi64 ",heap_free=%" PRIu32 "\n",
+           "OK,status,state=%s,uptime_s=%" PRIi64 ",heap_free=%" PRIu32
+           ",missed=%" PRIu32 ",qdrop=%" PRIu32 ",odrop=%" PRIu32
+           ",ohw=%" PRIu32 "\n",
            telemetry_state_name(), platform_time_us() / 1000000,
-           esp_get_free_heap_size());
+           esp_get_free_heap_size(), telemetry_missed_periods(),
+           telemetry_queue_drops(), output_dropped(), output_high_water());
   cli_write(cli, buf);
+}
+
+/*
+ * Stack headroom, per task, in bytes.
+ *
+ * uxTaskGetStackHighWaterMark reports the least free space a task has ever
+ * had, not what it has now — a number that can only be collected by running
+ * the thing, which is why every stack size in this firmware started as a
+ * guess with a comment admitting it.
+ *
+ * In bytes because StackType_t is uint8_t on Xtensa. On a Cortex-M with
+ * vanilla FreeRTOS the same call returns words, and the same number means
+ * four times as much.
+ */
+static void cmd_tasks(cli_t *cli, int argc, char **argv) {
+  static const char *const NAMES[] = {"measure", "process", "output", "cli"};
+  char                     buf[96];
+
+  (void)argc;
+  (void)argv;
+
+  for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) {
+    TaskHandle_t handle = xTaskGetHandle(NAMES[i]);
+
+    if (handle == NULL) {
+      snprintf(buf, sizeof buf, "OK,task,name=%s,state=absent\n", NAMES[i]);
+    } else {
+      snprintf(buf, sizeof buf, "OK,task,name=%s,stack_free_b=%" PRIu32 "\n",
+               NAMES[i], (uint32_t)uxTaskGetStackHighWaterMark(handle));
+    }
+    cli_write(cli, buf);
+  }
 }
 
 /*
@@ -237,6 +279,7 @@ static const cli_command_t COMMANDS[] = {
     {"status", "current bench state", cmd_status},
     {"start", "begin a measurement session", cmd_start},
     {"stop", "end the current session", cmd_stop},
+    {"tasks", "stack headroom of every task, in bytes", cmd_tasks},
     {"simulate", "select a simulated profile, or off", cmd_simulate},
 };
 
@@ -255,6 +298,10 @@ void app_main(void) {
   esp_rom_output_tx_wait_idle(PLATFORM_CONSOLE_UART_PORT);
 
   platform_esp32_init();
+
+  /* First of the three: it creates the queue every other task sends into, and
+     a send against a null handle is a crash rather than a lost line. */
+  output_start();
 
   /* Before cli_uart_start, not after: this creates the mutex that start, stop
      and status all take. Accepting commands first leaves a window of a few

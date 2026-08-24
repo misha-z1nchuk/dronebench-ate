@@ -7,12 +7,15 @@
 #include "freertos/task.h"
 
 #include "dronebench/platform.h"
+#include "esp_task_wdt.h"
+
+#include "output.h"
 #include "platform_esp32.h"
 
 #define CLI_UART_CHUNK 64
 
-/* Measured with uxTaskGetStackHighWaterMark once handlers exist; 3 KB is a
-   starting point, not a measurement. */
+/* Measured 2026-08-24: 1768 bytes used of 3072, with every handler exercised.
+   The largest consumer is snprintf into a CLI_LINE_MAX buffer. */
 #define CLI_TASK_STACK     3072
 #define CLI_TASK_PRIORITY  5
 
@@ -24,9 +27,12 @@ static void cli_uart_output(void *ctx, const char *text)
 {
     (void)ctx;
 
-    /* One place in the firmware turns bytes into UART traffic. When the
-       console moves to another transport, only that place changes. */
-    platform_uart_write(text, strlen(text));
+    /* Through the queue rather than to the port, so a reply cannot be split
+       by a telemetry line arriving between two of its fragments. Day 7 fixed
+       that by assembling each reply into one buffer before writing; the rule
+       held only as long as everyone remembered it. Now a caller cannot break
+       the ordering even by trying. */
+    output_send(text, strlen(text));
 }
 
 static void cli_uart_task(void *arg)
@@ -34,6 +40,10 @@ static void cli_uart_task(void *arg)
     uint8_t chunk[CLI_UART_CHUNK];
 
     (void)arg;
+
+    /* NULL is "this task", so it must run here rather than in
+       cli_uart_start(), which executes on whoever called it. */
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
     for (;;) {
         /* Blocks until bytes arrive or the timeout expires, so an idle
@@ -44,6 +54,12 @@ static void cli_uart_task(void *arg)
         if (n > 0) {
             cli_feed(&s_cli, (const char *)chunk, (size_t)n);
         }
+
+        /* The 50 ms read timeout above is what makes this reachable at all: a
+           console blocked forever on an idle port would never report itself
+           alive, and the watchdog would reboot a perfectly healthy bench for
+           having nobody typing at it. */
+        platform_watchdog_feed();
     }
 }
 

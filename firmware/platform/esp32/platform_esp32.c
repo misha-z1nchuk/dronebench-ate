@@ -138,13 +138,16 @@ void platform_uart_write(const char *data, size_t size) {
 
 void platform_watchdog_feed(void) {
   /*
-   * Only succeeds for a task that has subscribed to the task watchdog. No task
-   * has yet, so today every call returns ESP_ERR_NOT_FOUND and feeds nothing —
-   * which is indistinguishable from a working watchdog until the day it is
-   * needed. Day 10 subscribes the tasks and verifies this actually fires.
+   * Only succeeds for a task that has subscribed to the task watchdog. Until
+   * day 10 no task had, so every call returned ESP_ERR_NOT_FOUND and fed
+   * nothing — indistinguishable from a working watchdog right up until the
+   * day it was needed. The three long-lived tasks now subscribe themselves
+   * with esp_task_wdt_add(NULL), which is deliberately not abstracted here:
+   * subscription is a property of a task, and the tasks are platform code.
    *
-   * ESP_ERROR_CHECK is deliberately absent: it would abort on every call in
-   * the current state.
+   * ESP_ERROR_CHECK stays absent. A task that feeds without subscribing is a
+   * bug, but aborting the bench mid-session is a worse answer to it than the
+   * silence — and the subscription is checked where it happens.
    */
   esp_task_wdt_reset();
 }

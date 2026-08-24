@@ -41,3 +41,13 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=460800
 # accurate even when a wake-up lands late — which is precisely why the sampler
 # records real timestamps instead of assuming the nominal period.
 CONFIG_FREERTOS_HZ=1000
+
+# The task watchdog only prints a warning by default: it names the task that
+# stopped feeding and lets the board carry on. For a bench that will spin
+# motors that is the wrong end of the trade — a hung task with a motor running
+# is exactly the moment to reach a known state rather than to file a report.
+#
+# With this set, the watchdog panics and resets. The reason survives the reset
+# and comes back out in the banner through esp_reset_reason(), which is what
+# reset_reason_to_string() in main.c is for.
+CONFIG_ESP_TASK_WDT_PANIC=y

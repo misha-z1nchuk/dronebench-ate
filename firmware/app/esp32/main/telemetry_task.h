@@ -15,8 +15,10 @@
 #define TELEMETRY_TASK_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
-/* Creates the task. Call once, after platform_esp32_init(). */
+/* Creates the pipeline's two tasks and the queue between them. Call once,
+   after platform_esp32_init() and after output_start(). */
 void telemetry_task_start(void);
 
 /*
@@ -29,5 +31,15 @@ bool telemetry_session_stop(void);
 
 /* For the `status` command. Never NULL. */
 const char *telemetry_state_name(void);
+
+/*
+ * Two ways a sample can fail to exist, kept apart because they mean different
+ * things. Missed periods say the bench could not keep up with its own sample
+ * rate; queue drops say it sampled fine but processing fell behind. Summed
+ * into one figure on the wire — the host cannot act on the difference — but
+ * separate here, because the repair is not the same.
+ */
+uint32_t telemetry_missed_periods(void);
+uint32_t telemetry_queue_drops(void);
 
 #endif /* TELEMETRY_TASK_H */

@@ -16,6 +16,7 @@
  *     accept `stop` while a motor is spinning.
  */
 #include "dronebench/cli.h"
+#include <stdio.h>
 #include <string.h>
 
 void cli_init(cli_t *cli, const cli_command_t *commands, size_t command_count,
@@ -139,9 +140,14 @@ void cli_write(cli_t *cli, const char *text) {
 
 void cli_print_help(cli_t *cli) {
   for (size_t i = 0; i < cli->command_count; ++i) {
-    cli_write(cli, cli->commands[i].name);
-    cli_write(cli, " - ");
-    cli_write(cli, cli->commands[i].help);
-    cli_write(cli, "\n");
+    /* One write per line, not four. A reply assembled from several writes can
+       have telemetry land between its parts — the queue underneath preserves
+       arrival order but cannot make four sends into one. Same reason
+       cmd_status was rewritten on day 7. */
+    char line[CLI_LINE_MAX];
+
+    snprintf(line, sizeof line, "%s - %s\n", cli->commands[i].name,
+             cli->commands[i].help);
+    cli_write(cli, line);
   }
 }
