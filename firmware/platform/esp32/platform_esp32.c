@@ -62,16 +62,63 @@ uint64_t platform_time_us(void) {
   return (uint64_t)esp_timer_get_time();
 }
 
+/*
+ * Simulation state. Enabled by default because the ADC path below cannot yet
+ * answer: the dividers are not built, and putting 4.35 V on a 3.3 V pin to
+ * find out would cost a board.
+ */
+static struct {
+  bool        enabled;
+  simulator_t sim;
+} s_source = {
+    .enabled = true,
+};
+
+void platform_esp32_set_simulation(bool enabled, sim_profile_t profile) {
+  s_source.enabled = enabled;
+  simulator_init(&s_source.sim, profile);
+}
+
+bool platform_esp32_simulation_enabled(void) { return s_source.enabled; }
+
+sim_profile_t platform_esp32_simulation_profile(void) {
+  return s_source.sim.profile;
+}
+
+/*
+ * Both channels are read from one simulator call so they stay consistent with
+ * each other. Sampling them separately would let the timeline advance between
+ * the two, and voltage would then describe a slightly different instant than
+ * the current it is supposed to pair with — small, invisible, and exactly the
+ * kind of thing that shows up later as an unexplained offset in the power
+ * figure.
+ */
+static void simulated_pair(float *voltage_v, float *current_a) {
+  simulator_read(&s_source.sim, platform_time_us(), voltage_v, current_a);
+}
+
 bool platform_adc_read_voltage(float *value) {
+  if (s_source.enabled) {
+    float current;
+
+    simulated_pair(value, &current);
+    return true;
+  }
+
   /* Day 12. Until the divider exists and is calibrated, reporting a number
      here would be worse than reporting nothing. */
-  (void)value;
   return false;
 }
 
 bool platform_adc_read_current(float *value) {
+  if (s_source.enabled) {
+    float voltage;
+
+    simulated_pair(&voltage, value);
+    return true;
+  }
+
   /* Day 13. */
-  (void)value;
   return false;
 }
 

@@ -8,5 +8,6 @@ void test_sampler(void);
 void test_metrics(void);
 void test_session(void);
 void test_telemetry(void);
+void test_simulator(void);
 
 #endif /* DRONEBENCH_TESTS_H */

@@ -13,6 +13,7 @@ int main(void)
     test_metrics();
     test_session();
     test_telemetry();
+    test_simulator();
 
     return tf_report();
 }

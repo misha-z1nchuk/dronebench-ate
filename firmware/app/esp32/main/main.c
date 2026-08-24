@@ -8,9 +8,11 @@
  */
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "cli_uart.h"
 #include "dronebench/platform.h"
+#include "dronebench/simulator.h"
 #include "platform_esp32.h"
 
 #include "esp_chip_info.h"
@@ -140,10 +142,48 @@ static void cmd_status(cli_t *cli, int argc, char **argv) {
   cli_write(cli, "\n");
 }
 
+static void cmd_simulate(cli_t *cli, int argc, char **argv) {
+  sim_profile_t profile;
+  char          buf[64];
+
+  if (argc == 1) {
+    snprintf(buf, sizeof buf, "OK,simulate,enabled=%d,profile=%s\n",
+             platform_esp32_simulation_enabled() ? 1 : 0,
+             simulator_profile_name(platform_esp32_simulation_profile()));
+    cli_write(cli, buf);
+    return;
+  }
+
+  if (argc != 2) {
+    cli_write(cli, "ERR,usage,simulate [off|<profile>]\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "off") == 0) {
+    /* Selects the real ADC, which has nothing behind it until day 12. The
+       bench will then report sensor failures — honestly, and by design. */
+    platform_esp32_set_simulation(false, SIM_PROFILE_NORMAL);
+    cli_write(cli, "OK,simulate,enabled=0\n");
+    return;
+  }
+
+  if (!simulator_profile_from_name(argv[1], &profile)) {
+    cli_write(cli, "ERR,unknown_profile,");
+    cli_write(cli, argv[1]);
+    cli_write(cli, "\n");
+    return;
+  }
+
+  platform_esp32_set_simulation(true, profile);
+  snprintf(buf, sizeof buf, "OK,simulate,enabled=1,profile=%s\n", argv[1]);
+  cli_write(cli, buf);
+}
+
 static const cli_command_t COMMANDS[] = {
     {"help", "list available commands", cmd_help},
     {"version", "firmware version and build date", cmd_version},
     {"status", "current bench state", cmd_status},
+    {"simulate", "select a simulated profile, or off", cmd_simulate},
 };
 
 void app_main(void) {
