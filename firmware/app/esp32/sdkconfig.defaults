@@ -10,3 +10,20 @@ CONFIG_COMPILER_WARN_WRITE_STRINGS=y
 # and then fails at runtime.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# Telemetry at 500 Hz needs more than 115200 can carry — see plan section 7.
+#
+# 460800, not 921600: the bridge on this board is a CH340 (VID 1a86, PID 7523),
+# and 921600 came out as garbage through the macOS driver. 460800 still leaves
+# 2094 lines/s against the 500 needed.
+#
+# The baud rate has a Kconfig prompt only when the console is set to CUSTOM;
+# without this line the next one is silently ignored and the build keeps the
+# 115200 default with no warning. CUSTOM leaves TX/RX on GPIO 1/3 for the
+# ESP32, which is where they already were.
+#
+# ESPTOOLPY_MONITOR_BAUD is deliberately not set: it has no prompt and
+# defaults to ESP_CONSOLE_UART_BAUDRATE, so `idf.py monitor` follows on its
+# own. One place to change, and no way for the two to disagree.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=460800

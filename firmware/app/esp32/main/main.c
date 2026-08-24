@@ -15,6 +15,7 @@
 
 #include "esp_chip_info.h"
 #include "esp_idf_version.h"
+#include "esp_rom_uart.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -147,6 +148,17 @@ static const cli_command_t COMMANDS[] = {
 
 void app_main(void) {
   print_banner();
+
+  /* printf buffers, and the tail of the banner is still in the UART FIFO at
+     this point. Installing the driver reconfigures the peripheral and drops
+     whatever had not gone out yet — which is why the banner used to stop
+     mid-word.
+     Two calls because there are two buffers: fflush moves bytes from stdio
+     into the UART, and the wait lets the hardware finish sending them.
+     The banner deliberately stays first: it answers "which build is on this
+     board", and that question matters most when whatever follows crashes. */
+  fflush(stdout);
+  esp_rom_output_tx_wait_idle(PLATFORM_CONSOLE_UART_PORT);
 
   platform_esp32_init();
 
