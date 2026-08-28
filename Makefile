@@ -9,6 +9,7 @@
 #   make pytest   run the host-tool tests             (no board needed)
 #   make log      record a telemetry session to CSV   (needs board)
 #   make report   turn a recording into a report       (no board needed)
+#   make msp      ask the flight controller what it is  (needs drone)
 #   make fw       build the ESP32 firmware            (needs ESP-IDF)
 #   make flash    build, flash and open the monitor   (needs board)
 #   make monitor  open the serial monitor             (needs board)
@@ -114,6 +115,7 @@ monitor:
 # the same habit as `make test`: run them before believing a change.
 
 TOOLS   := tools/serial_logger
+MSP     := tools/msp
 REPORTS := tools/report_generator
 VENV    := .venv
 
@@ -123,7 +125,7 @@ VENV    := .venv
 # dependency at all and run under either interpreter.
 PY := $(if $(wildcard $(VENV)/bin/python3),$(VENV)/bin/python3,python3)
 
-.PHONY: venv pytest log report
+.PHONY: venv pytest log report msp
 
 venv:
 	python3 -m venv $(VENV)
@@ -134,6 +136,7 @@ venv:
 pytest:
 	$(PY) -m unittest discover -s $(TOOLS)
 	$(PY) -m unittest discover -s $(REPORTS)
+	$(PY) -m unittest discover -s $(MSP)
 
 # make log                      -> find the board, write to data/sessions/
 # make log ARGS="-p /dev/cu.x"  -> anything logger.py accepts
@@ -148,3 +151,13 @@ report:
 	@test -n "$(SESSION)" || { \
 	    echo "usage: make report SESSION=data/sessions/session_..."; exit 1; }
 	$(PY) $(REPORTS)/generate.py $(SESSION) $(ARGS)
+
+# Phase 1b, step 1. Propellers off, no battery — the FC runs from USB.
+# make msp                       -> auto-detect the flight controller
+# make msp ARGS="override"         -> step 2, does the FC take SET_MOTOR
+# make msp ARGS="timeout"          -> step 3, how long it survives silence
+# make msp ARGS="hold --seconds 10"
+msp:
+	@test -x $(VENV)/bin/python3 || { \
+	    echo "pyserial is not installed. Run: make venv"; exit 1; }
+	$(PY) $(MSP)/spike.py $(if $(ARGS),$(ARGS),read)

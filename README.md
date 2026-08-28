@@ -5,17 +5,49 @@ Automated test equipment for 1S FPV drones. The bench answers one question —
 measuring the power path while driving the flight controller through a
 standardised test sequence.
 
-**Status: in development.** Nothing here is validated against hardware yet.
+**Status: in development.** The software pipeline is complete and runs
+end to end on simulated measurements. The analog front-end is built and
+verified with a multimeter, but the ADC path is not calibrated yet, so no
+number in this repository came from a real battery.
 
 - [Plan and schematics](dronebench_ate_final_plan.md) (Ukrainian)
 - [Progress log](PROGRESS.md) (Ukrainian)
+
+## Reproduce it
+
+No board, no drone, no instruments. Four commands.
+
+```sh
+make venv                                        # once: .venv + pyserial
+make test                                        # 467 checks / 101 cases — the C core
+make pytest                                      # 89 tests — the Python tools
+make report SESSION=data/baselines/motor4_fail   # a verdict from a known-bad recording
+```
+
+The last one prints the report in section 11 of the plan and exits `2`,
+because that recording contains a motor that never drew current and the
+bench is supposed to say so. Exit codes carry the verdict: `0` pass,
+`1` warning, `2` fail, `3` inconclusive.
+
+`data/baselines/motor4_fail/` is a synthetic recording with a defect whose
+right answer is known in advance, committed on purpose — a fixture that needs
+neither a board nor a broken drone. Its report is versioned alongside it, so
+regenerating reproduces the committed text byte for byte except the timestamp,
+and a change in the diagnostic rules shows up as a diff in review.
+
+To replay a recorded stream through the logger as if a board were attached:
+
+```sh
+.venv/bin/python3 tools/serial_logger/logger.py --replay <saved-log>
+```
 
 ## What it does
 
 Measures battery voltage and current draw through a custom analog front-end,
 cross-checked against an independent I2C reference so the bench can state its
-own measurement uncertainty rather than assume it. Runs each motor separately
-with props removed, compares current profiles, and classifies the result:
+own measurement uncertainty rather than assume it. Drives the flight
+controller over MSP to run each motor separately with props removed, compares
+current profiles, and classifies the result:
 
 ```
 PASS · REPAIR_MINOR · REPAIR_ELECTRONICS · UNSAFE · UNKNOWN
@@ -27,13 +59,15 @@ it — never that a specific part has failed, unless an isolation test proved it
 ## Layout
 
 ```
-firmware/core/       portable logic — no vendor SDK headers, ever
-firmware/platform/   host / esp32 / stm32 implementations of platform.h
-firmware/app/        wiring for the target build
-firmware/tests/      host unit tests for the core
-tools/               Python: serial logger, report generator, simulator
-test_profiles/       per-airframe limits
-docs/                measurement methodology, error budget
+firmware/core/          portable logic — no vendor SDK headers, ever
+firmware/platform/      host / esp32 / stm32 implementations of platform.h
+firmware/app/           wiring for the target build
+firmware/tests/         host unit tests for the core
+tools/serial_logger/    reads telemetry off the wire, writes CSV
+tools/report_generator/ segmentation, rules, verdicts, graphs
+tools/msp/              talks MSP to the flight controller
+test_profiles/          per-airframe limits
+docs/                   measurement methodology, error budget
 ```
 
 The core compiles and passes its tests on a desktop compiler with no board
