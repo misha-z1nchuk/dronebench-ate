@@ -11,14 +11,28 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "dronebench/platform.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 
 #define PLATFORM_LED_GPIO 2
-
+/*
+ * Conversions averaged per reading. Four times the samples buys one bit, so
+ * this is worth three; 256 would be worth four and is the other value the
+ * plan suggests. At a few microseconds per conversion both fit inside the
+ * 2 ms a 500 Hz period allows, so the choice is free and can be revisited
+ * once day 12 has measured what the noise actually is.
+ */
+#define TIMES_READ_VOLTAGE 64
 /* Sized for a host that pastes a whole command at once. It only has to outlast
    the scheduling gap between two runs of whoever is draining it. */
 #define PLATFORM_UART_RX_BUFFER 512
+
+static adc_oneshot_unit_handle_t s_adc;
+static adc_cali_handle_t s_cali;
+static bool s_cali_ok;
 
 void platform_esp32_init(void) {
   const gpio_config_t io_conf = {
@@ -50,6 +64,28 @@ void platform_esp32_init(void) {
   ESP_ERROR_CHECK(uart_param_config(PLATFORM_CONSOLE_UART_PORT, &uart_conf));
   ESP_ERROR_CHECK(uart_driver_install(
       PLATFORM_CONSOLE_UART_PORT, PLATFORM_UART_RX_BUFFER, 2048, 0, NULL, 0));
+
+  const adc_oneshot_unit_init_cfg_t init_config1 = {
+      .unit_id = ADC_UNIT_1,
+      .ulp_mode = ADC_ULP_MODE_DISABLE,
+  };
+
+  ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &s_adc));
+
+  const adc_oneshot_chan_cfg_t config = {
+      .bitwidth = ADC_BITWIDTH_DEFAULT,
+      .atten = ADC_ATTEN_DB_12,
+  };
+  ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc, ADC_CHANNEL_6, &config));
+
+  const adc_cali_line_fitting_config_t cali_config = {
+      .unit_id = ADC_UNIT_1,
+      .atten = ADC_ATTEN_DB_12,
+      .bitwidth = ADC_BITWIDTH_DEFAULT,
+  };
+
+  s_cali_ok =
+      adc_cali_create_scheme_line_fitting(&cali_config, &s_cali) == ESP_OK;
 }
 
 uint64_t platform_time_us(void) {
@@ -98,39 +134,69 @@ static void simulated_pair(float *voltage_v, float *current_a) {
 }
 
 /*
- * Day 12 — YOURS TO WRITE.
+ * Millivolts at the battery divider's node, before any calibration of ours.
  *
- * Millivolts at GPIO34, and nothing more: no divider ratio, no calibration.
- * The contract is in platform.h; the arithmetic that turns this into volts is
- * already written and tested in core/measurements/calibration.c.
+ * This is one half of every calibration pair; the other half is what the
+ * multimeter says about the same point at the same moment. Contract in
+ * platform.h, arithmetic in core/measurements/calibration.c.
  *
- * What belongs here, from the plan's day 12 and section 4.5:
+ * WHY THE AVERAGE IS TAKEN AFTER THE CONVERSION AND NOT BEFORE
  *
- *   1. ADC1 on GPIO34 (channel 6), attenuation 12 dB. The front-end was
- *      built so the worst case lands at 2.19 V, inside the 2.4 V where the
- *      converter is still linear — see the day 11 table in PROGRESS.md.
+ * The cheaper arrangement is to sum raw counts, divide, and convert once.
+ * It gives a worse answer. adc_cali_raw_to_voltage() returns whole
+ * millivolts, so converting the average rounds the result into 1 mV steps
+ * and everything multisampling bought below that is discarded. Converting
+ * first and averaging after keeps it: the ADC's own noise dithers each
+ * conversion across the boundary, and the mean of sixty-four of them lands
+ * between the steps. The cost is sixty-four calls of arithmetic, which is
+ * nothing next to sixty-four conversions of hardware.
  *
- *   2. Multisampling, 64 to 256 conversions averaged. Four times the samples
- *      buys one bit, so 64 is worth three bits and 256 is worth four. Past
- *      that the return does not pay for the time, and at 500 Hz the whole
- *      budget for one period is 2 ms.
- *
- *   3. The calibration curve from eFuse. Two boards with the same silicon
- *      have reference voltages that differ by tens of millivolts, and the
- *      factory measured this one. Without it the conversion uses a nominal
- *      1100 mV that this chip does not have.
- *
- *   4. Return false if the driver reports an error. Not a zero, not the last
- *      good reading — false, with *value untouched.
- *
- * IDF v5.5 note: esp_adc_cal is retired. The current API is adc_oneshot_*
- * for reading and adc_cali_* for the correction, and the calibration handle
- * is created once and reused. Do the init in platform_esp32_init(), not on
- * every call.
+ * This only works because there is noise. On a perfectly quiet input every
+ * conversion returns the same integer and the average returns it too — which
+ * is the correct answer in that case anyway.
  */
+
+/* GPIO34, per plan section 4.5. Channels 7 (GPIO35) and 4 (GPIO32) belong to
+   the current path and are configured on day 13, not before there is
+   something to read them for. */
+#define ADC_CHANNEL_BATTERY ADC_CHANNEL_6
+
 bool platform_adc_read_millivolts(float *value) {
-  (void)value;
-  return false;
+  float sum = 0.0f;
+
+  /*
+   * Refused rather than approximated. Without the factory curve the driver
+   * falls back to a nominal 1100 mV reference that this particular chip does
+   * not have, and the resulting error — a few percent — would be inherited by
+   * every voltage the bench ever reports, including the calibration meant to
+   * remove it.
+   */
+  if (!s_cali_ok) {
+    return false;
+  }
+
+  for (int i = 0; i < TIMES_READ_VOLTAGE; i++) {
+    int raw;
+    int mv;
+
+    /* Not ESP_ERROR_CHECK: that aborts the firmware, and a driver hiccup
+       must not reboot a bench with a motor spinning. sampler_t already
+       counts a refused reading as sensor_failures, which is where this
+       belongs. */
+    if (adc_oneshot_read(s_adc, ADC_CHANNEL_BATTERY, &raw) != ESP_OK) {
+      return false;
+    }
+    if (adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK) {
+      return false;
+    }
+
+    sum += (float)mv;
+  }
+
+  /* 64 * ~2200 is about 140 000, exact in a float's 24-bit mantissa with four
+     orders to spare, so nothing is lost in the accumulation. */
+  *value = sum / (float)TIMES_READ_VOLTAGE;
+  return true;
 }
 
 bool platform_adc_read_voltage(float *value) {

@@ -11,6 +11,7 @@ idf_component_register(
          "../../../core/protocol/telemetry.c"
          "../../../core/measurements/sampler.c"
          "../../../core/measurements/metrics.c"
+         "../../../core/measurements/calibration.c"
          "../../../core/measurements/simulator.c"
          "../../../core/state_machine/session.c"
          "../../../platform/esp32/platform_esp32.c"
@@ -24,4 +25,9 @@ idf_component_register(
     REQUIRES esp_driver_uart
              esp_driver_gpio
              esp_timer
+             # Day 12. adc_oneshot_* and adc_cali_* both live here, and
+             # without this line the includes resolve in the editor -- clangd
+             # reads a compile_commands.json that predates the change -- and
+             # then fail at build as an implicit declaration.
+             esp_adc
 )
