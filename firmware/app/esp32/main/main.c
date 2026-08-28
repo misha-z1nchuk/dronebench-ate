@@ -8,6 +8,7 @@
  */
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cli_uart.h"
@@ -273,6 +274,82 @@ static void cmd_simulate(cli_t *cli, int argc, char **argv) {
   cli_write(cli, buf);
 }
 
+/* Enough for the 64-256 the plan asks for, with room to see whether more
+   helps. Bounded because the CLI task blocks here and the task watchdog is
+   still watching — at a few microseconds per conversion this is well inside
+   its 5 s, but an unbounded argument would not be. */
+#define ADC_MAX_READS 1024
+
+/*
+ * Day 12's instrument, not a measurement.
+ *
+ * Prints millivolts at the pin, before any calibration, because that is one
+ * half of every calibration pair — the other half is what the multimeter says
+ * about the same point at the same moment. Reading it back through the
+ * calibrated path would be fitting the fit.
+ *
+ * With a count it also reports the spread, which is the input to the decision
+ * in plan section 3.3.1: if the analog channel's noise is worse than 100 mA
+ * once scaled, the ACS724 cannot compare motors and the INA226 has to.
+ */
+static void cmd_adc(cli_t *cli, int argc, char **argv) {
+  char     buf[128];
+  long     count = 1;
+  float    first = 0.0f, sum = 0.0f, min = 0.0f, max = 0.0f;
+  uint32_t taken = 0, failed = 0;
+
+  if (argc > 1) {
+    char *end;
+
+    count = strtol(argv[1], &end, 10);
+    if (*end != '\0' || count < 1 || count > ADC_MAX_READS) {
+      snprintf(buf, sizeof buf, "ERR,usage,adc [1..%d]\n", ADC_MAX_READS);
+      cli_write(cli, buf);
+      return;
+    }
+  }
+
+  for (long i = 0; i < count; i++) {
+    float mv;
+
+    if (!platform_adc_read_millivolts(&mv)) {
+      failed++;
+      continue;
+    }
+
+    if (taken == 0) {
+      first = min = max = mv;
+    } else if (mv < min) {
+      min = mv;
+    } else if (mv > max) {
+      max = mv;
+    }
+    sum += mv;
+    taken++;
+  }
+
+  /* Refused rather than reported as zero. A channel that answered nothing and
+     a channel that read 0 mV look identical in a log, and only one of them
+     means the front-end is connected. */
+  if (taken == 0) {
+    snprintf(buf, sizeof buf, "ERR,adc,no_reading,failed=%" PRIu32 "\n",
+             failed);
+    cli_write(cli, buf);
+    return;
+  }
+
+  if (count == 1) {
+    snprintf(buf, sizeof buf, "OK,adc,mv=%.1f\n", (double)first);
+  } else {
+    snprintf(buf, sizeof buf,
+             "OK,adc,n=%" PRIu32 ",mv=%.1f,min=%.1f,max=%.1f,pp=%.1f,"
+             "failed=%" PRIu32 "\n",
+             taken, (double)(sum / (float)taken), (double)min, (double)max,
+             (double)(max - min), failed);
+  }
+  cli_write(cli, buf);
+}
+
 static const cli_command_t COMMANDS[] = {
     {"help", "list available commands", cmd_help},
     {"version", "firmware version and build date", cmd_version},
@@ -281,6 +358,7 @@ static const cli_command_t COMMANDS[] = {
     {"stop", "end the current session", cmd_stop},
     {"tasks", "stack headroom of every task, in bytes", cmd_tasks},
     {"simulate", "select a simulated profile, or off", cmd_simulate},
+    {"adc", "raw millivolts at the ADC pin, for calibration", cmd_adc},
 };
 
 void app_main(void) {

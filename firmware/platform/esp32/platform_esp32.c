@@ -97,6 +97,42 @@ static void simulated_pair(float *voltage_v, float *current_a) {
   simulator_read(&s_source.sim, platform_time_us(), voltage_v, current_a);
 }
 
+/*
+ * Day 12 — YOURS TO WRITE.
+ *
+ * Millivolts at GPIO34, and nothing more: no divider ratio, no calibration.
+ * The contract is in platform.h; the arithmetic that turns this into volts is
+ * already written and tested in core/measurements/calibration.c.
+ *
+ * What belongs here, from the plan's day 12 and section 4.5:
+ *
+ *   1. ADC1 on GPIO34 (channel 6), attenuation 12 dB. The front-end was
+ *      built so the worst case lands at 2.19 V, inside the 2.4 V where the
+ *      converter is still linear — see the day 11 table in PROGRESS.md.
+ *
+ *   2. Multisampling, 64 to 256 conversions averaged. Four times the samples
+ *      buys one bit, so 64 is worth three bits and 256 is worth four. Past
+ *      that the return does not pay for the time, and at 500 Hz the whole
+ *      budget for one period is 2 ms.
+ *
+ *   3. The calibration curve from eFuse. Two boards with the same silicon
+ *      have reference voltages that differ by tens of millivolts, and the
+ *      factory measured this one. Without it the conversion uses a nominal
+ *      1100 mV that this chip does not have.
+ *
+ *   4. Return false if the driver reports an error. Not a zero, not the last
+ *      good reading — false, with *value untouched.
+ *
+ * IDF v5.5 note: esp_adc_cal is retired. The current API is adc_oneshot_*
+ * for reading and adc_cali_* for the correction, and the calibration handle
+ * is created once and reused. Do the init in platform_esp32_init(), not on
+ * every call.
+ */
+bool platform_adc_read_millivolts(float *value) {
+  (void)value;
+  return false;
+}
+
 bool platform_adc_read_voltage(float *value) {
   if (s_source.enabled) {
     float current;
@@ -106,7 +142,12 @@ bool platform_adc_read_voltage(float *value) {
   }
 
   /* Day 12. Until the divider exists and is calibrated, reporting a number
-     here would be worse than reporting nothing. */
+     here would be worse than reporting nothing.
+
+     Once platform_adc_read_millivolts() works, this becomes: read it, then
+     calibration_apply(&s_voltage_cal, mv, value). It stays false until the
+     fit has been made and stored — an uncalibrated reading is not a rough
+     measurement of the battery, it is a measurement of something else. */
   return false;
 }
 

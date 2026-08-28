@@ -12,6 +12,7 @@ static struct {
     float voltage_v;
     float current_a;
     float ref_current_a;
+    float millivolts;
 
     bool voltage_ok;
     bool current_ok;
@@ -50,6 +51,11 @@ void platform_host_set_readings(float voltage_v, float current_a,
     g_host.ref_current_a = ref_current_a;
 }
 
+void platform_host_set_millivolts(float millivolts)
+{
+    g_host.millivolts = millivolts;
+}
+
 void platform_host_set_sensor_ok(bool voltage_ok, bool current_ok, bool ref_ok)
 {
     g_host.voltage_ok = voltage_ok;
@@ -85,6 +91,17 @@ bool platform_adc_read_voltage(float *value)
         return false;
     }
     *value = g_host.voltage_v;
+    return true;
+}
+
+/* Shares voltage_ok: it is the same pin and the same conversion, so a
+   channel that cannot answer cannot answer either way. */
+bool platform_adc_read_millivolts(float *value)
+{
+    if (!g_host.voltage_ok) {
+        return false;
+    }
+    *value = g_host.millivolts;
     return true;
 }
 

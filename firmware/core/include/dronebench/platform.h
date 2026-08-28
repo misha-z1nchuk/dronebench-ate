@@ -28,6 +28,24 @@ uint64_t platform_time_us(void);
 /* Battery voltage in volts, already scaled for the divider and calibrated. */
 bool platform_adc_read_voltage(float *value);
 
+/*
+ * The same channel before calibration: millivolts at the ADC pin, after
+ * multisampling and whatever conversion the vendor's reference correction
+ * applies, and nothing else.
+ *
+ * This exists so a calibration can be collected at all. calibration_fit()
+ * needs pairs of "what the ADC said" and "what the meter said", and the first
+ * half of every pair has to come out of the firmware in a form that has not
+ * already been through the fit being measured. Reading it back through
+ * platform_adc_read_voltage() would be circular.
+ *
+ * Not for measurement. Nothing outside the calibration command should call
+ * it: the number is real but it is not volts at the battery, and it will be
+ * off by the divider ratio — a factor of two, which looks entirely plausible
+ * on a 1S pack.
+ */
+bool platform_adc_read_millivolts(float *value);
+
 /* Current in amperes from the analog front-end (ACS724 + ADC). */
 bool platform_adc_read_current(float *value);
 

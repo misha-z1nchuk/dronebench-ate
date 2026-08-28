@@ -27,6 +27,10 @@ void platform_host_advance_us(uint64_t delta_us);
 void platform_host_set_readings(float voltage_v, float current_a,
                                 float ref_current_a);
 
+/* The uncalibrated reading, set independently of voltage_v — the two are
+   related by a calibration the tests are allowed to disagree with. */
+void platform_host_set_millivolts(float millivolts);
+
 /* Marks channels as unavailable, so the core's failure paths can be exercised.
    An unavailable read returns false and must leave the caller's value alone. */
 void platform_host_set_sensor_ok(bool voltage_ok, bool current_ok,
