@@ -13,8 +13,14 @@ dependencies.lock
 Debug/
 Release/
 .settings/
-.cproject
-.project
+
+# .project and .cproject are NOT ignored, deliberately. In an ordinary Eclipse
+# project they are per-machine noise. Here they carry the only copy of how the
+# shared tree is wired into the Cube project: three linked folders pointing at
+# firmware/core, firmware/platform/stm32 and firmware/app/stm32/src, plus the
+# include paths that reach them. None of that can be regenerated from the .ioc
+# — CubeMX does not know those directories exist. Ignore them and a fresh
+# clone builds a firmware with no core in it.
 
 # Python
 __pycache__/

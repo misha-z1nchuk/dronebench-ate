@@ -125,7 +125,7 @@ VENV    := .venv
 # dependency at all and run under either interpreter.
 PY := $(if $(wildcard $(VENV)/bin/python3),$(VENV)/bin/python3,python3)
 
-.PHONY: venv pytest log report msp
+.PHONY: venv pytest log report msp console
 
 venv:
 	python3 -m venv $(VENV)
@@ -161,3 +161,22 @@ msp:
 	@test -x $(VENV)/bin/python3 || { \
 	    echo "pyserial is not installed. Run: make venv"; exit 1; }
 	$(PY) $(MSP)/spike.py $(if $(ARGS),$(ARGS),read)
+
+# An interactive terminal on the board's console, for the CLI: help, status,
+# adc, vdda, start, stop. `make monitor` is idf.py and only speaks to the
+# ESP32; this one is just a serial port and works with whichever board is
+# plugged in.
+#
+# make console                    -> first /dev/cu.usbmodem* found
+# make console PORT=/dev/cu.xyz   -> say which one
+CONSOLE_BAUD := 460800
+
+console:
+	@test -x $(VENV)/bin/python3 || { \
+	    echo "pyserial is not installed. Run: make venv"; exit 1; }
+	@port="$(PORT)"; \
+	 if [ -z "$$port" ]; then port=$$(ls /dev/cu.usbmodem* 2>/dev/null | head -1); fi; \
+	 test -n "$$port" || { \
+	     echo "no /dev/cu.usbmodem* — is the board plugged in?"; exit 1; }; \
+	 echo "$$port at $(CONSOLE_BAUD) baud — Ctrl-] to quit"; \
+	 $(PY) -m serial.tools.miniterm --eol LF "$$port" $(CONSOLE_BAUD)
