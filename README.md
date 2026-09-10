@@ -6,9 +6,12 @@ measuring the power path while driving the flight controller through a
 standardised test sequence.
 
 **Status: in development.** The software pipeline is complete and runs
-end to end on simulated measurements. The analog front-end is built and
-verified with a multimeter, but the ADC path is not calibrated yet, so no
-number in this repository came from a real battery.
+end to end on simulated measurements. The portable core now runs on hardware
+on two vendors' silicon: on the STM32 it reads that chip's own supply rail
+through ST's factory VREFINT calibration, returning 3303.4-3303.8 mV across
+three separate flashes. That figure has not yet been checked against a
+multimeter, and the analog front-end -- built and verified on the bench -- is
+still uncalibrated, so no number in this repository came from a real battery.
 
 - [Plan and schematics](dronebench_ate_final_plan.md) (Ukrainian)
 - [Progress log](PROGRESS.md) (Ukrainian)
@@ -19,7 +22,7 @@ No board, no drone, no instruments. Four commands.
 
 ```sh
 make venv                                        # once: .venv + pyserial
-make test                                        # 467 checks / 101 cases — the C core
+make test                                        # 515 checks / 114 cases — the C core
 make pytest                                      # 89 tests — the Python tools
 make report SESSION=data/baselines/motor4_fail   # a verdict from a known-bad recording
 ```
@@ -87,6 +90,31 @@ Firmware (ESP-IDF v5.5, target ESP32):
 . ~/esp/esp-idf/export.sh
 idf.py -C firmware/app/esp32 build flash monitor
 ```
+
+Firmware (STM32 NUCLEO-F446RE):
+
+Open `firmware/app/stm32/dronebench-stm32/` in STM32CubeIDE and build. The
+project reaches the portable core through three linked folders instead of
+copying it, which is why `.project` and `.cproject` are committed — CubeMX
+cannot regenerate that wiring, and without it a fresh clone builds firmware
+with no core in it.
+
+Flashing needs no debug-probe software. The board presents a mass-storage
+volume that programs whatever binary is copied onto it:
+
+```sh
+arm-none-eabi-objcopy -O binary Debug/dronebench-stm32.elf firmware.bin
+cp firmware.bin /Volumes/NOD_F446RE/
+```
+
+Then talk to it over the ST-LINK's virtual serial port:
+
+```sh
+make console        # first /dev/cu.usbmodem* at 460800, Ctrl-] to quit
+```
+
+`help` lists the eight commands. `vdda` prints the supply rail the chip
+measured on itself, which is the number to compare against a multimeter.
 
 On macOS and Linux, `install.sh` deliberately does not install CMake and Ninja
 — it expects them from the system package manager. If `idf.py` reports
