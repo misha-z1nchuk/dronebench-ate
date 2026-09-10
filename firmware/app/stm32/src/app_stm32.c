@@ -207,9 +207,17 @@ static void cmd_status(cli_t *cli, int argc, char **argv)
     (void)argc;
     (void)argv;
     snprintf(buf, sizeof buf,
-             "OK,status,state=%s,uptime_s=%" PRIu64 ",accepted=%" PRIu32
+             "OK,status,state=%s,uptime_s=%" PRIu32 ",accepted=%" PRIu32
              ",failed=%" PRIu32 ",gaps=%" PRIu32 "\n",
-             session_state_name(&s_session), platform_time_us() / 1000000u,
+             session_state_name(&s_session),
+             /*
+              * Deliberately narrowed to 32 bits. newlib-nano drops %llu
+              * unless the image is linked with -u _printf_long_long, and it
+              * drops it silently: the board printed "uptime_s=lu" for a week
+              * before anyone ran it on hardware. Seconds overflow uint32_t
+              * after 136 years, so the 64-bit formatter buys nothing here.
+              */
+             (uint32_t)(platform_time_us() / 1000000u),
              s_sampler.accepted, s_sampler.sensor_failures, s_sampler.gaps);
     cli_write(cli, buf);
 }
