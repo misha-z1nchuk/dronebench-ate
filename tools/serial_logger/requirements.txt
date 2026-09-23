@@ -1,4 +1,11 @@
 # The logger needs pyserial; the report generator needs matplotlib for
 # graphs only — its rules and its tests run on the standard library alone.
+#
+# The blackbox plotter needs orangebox, which decodes Betaflight's
+# delta-compressed .BBL frames in pure Python. The usual tool for this,
+# blackbox_decode, publishes no macOS binary and wants cmake to build, so the
+# Python decoder is the shorter path rather than the exotic one.
 pyserial>=3.5
 matplotlib>=3.8
+orangebox>=0.5.0
+numpy>=1.26

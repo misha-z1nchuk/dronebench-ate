@@ -114,10 +114,11 @@ monitor:
 # same lines. Its tests need neither a board nor pyserial, so they belong in
 # the same habit as `make test`: run them before believing a change.
 
-TOOLS   := tools/serial_logger
-MSP     := tools/msp
-REPORTS := tools/report_generator
-VENV    := .venv
+TOOLS    := tools/serial_logger
+MSP      := tools/msp
+REPORTS  := tools/report_generator
+BLACKBOX := tools/blackbox
+VENV     := .venv
 
 # Prefer the project virtualenv when it exists. macOS ships an
 # externally-managed Python that refuses `pip install` outright (PEP 668), so
@@ -125,7 +126,7 @@ VENV    := .venv
 # dependency at all and run under either interpreter.
 PY := $(if $(wildcard $(VENV)/bin/python3),$(VENV)/bin/python3,python3)
 
-.PHONY: venv pytest log report msp console
+.PHONY: venv pytest log report msp console blackbox
 
 venv:
 	python3 -m venv $(VENV)
@@ -137,6 +138,7 @@ pytest:
 	$(PY) -m unittest discover -s $(TOOLS)
 	$(PY) -m unittest discover -s $(REPORTS)
 	$(PY) -m unittest discover -s $(MSP)
+	$(PY) -m unittest discover -s $(BLACKBOX)
 
 # make log                      -> find the board, write to data/sessions/
 # make log ARGS="-p /dev/cu.x"  -> anything logger.py accepts
@@ -152,6 +154,19 @@ report:
 	    echo "usage: make report SESSION=data/sessions/session_..."; exit 1; }
 	$(PY) $(REPORTS)/generate.py $(SESSION) $(ARGS)
 
+# Reads a log the flight controller wrote itself — no board, no port, nothing
+# to plug in. One directory of plots per session in the file.
+#
+# make blackbox LOG=~/Desktop/BTFL_BLACKBOX_LOG_....BBL
+# make blackbox LOG=... ARGS="--session 4"    -> only that session
+# make blackbox LOG=... ARGS="--list"         -> what is in the file, no plots
+blackbox:
+	@test -n "$(LOG)" || { \
+	    echo "usage: make blackbox LOG=path/to/BTFL_....BBL"; exit 1; }
+	@test -x $(VENV)/bin/python3 || { \
+	    echo "orangebox is not installed. Run: make venv"; exit 1; }
+	$(PY) $(BLACKBOX)/plot_log.py $(LOG) $(ARGS)
+
 # Phase 1b, step 1. Propellers off, no battery — the FC runs from USB.
 # make msp                       -> auto-detect the flight controller
 # make msp ARGS="override"         -> step 2, does the FC take SET_MOTOR
@@ -163,7 +178,7 @@ msp:
 	$(PY) $(MSP)/spike.py $(if $(ARGS),$(ARGS),read)
 
 # An interactive terminal on the board's console, for the CLI: help, status,
-# adc, vdda, start, stop. `make monitor` is idf.py and only speaks to the
+# adc, vdda, nodes, cal, volts, zero, amps, start, stop. `make monitor` is idf.py and only speaks to the
 # ESP32; this one is just a serial port and works with whichever board is
 # plugged in.
 #
