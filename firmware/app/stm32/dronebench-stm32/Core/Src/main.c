@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app_stm32.h"
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
@@ -45,6 +46,8 @@
 
 ADC_HandleTypeDef hadc1;
 
+CAN_HandleTypeDef hcan1;
+
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
@@ -56,6 +59,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_CAN1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -96,8 +100,74 @@ int main(void)
   MX_GPIO_Init();
   MX_ADC1_Init();
   MX_USART2_UART_Init();
+  MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
   app_stm32_init();
+
+  /* --- CAN1 loopback self-test ------------------------------------------ */
+  {
+    char line[96];
+    int  n;
+
+    /* Filter first. Without one the FIFO accepts nothing -- not even a frame
+       the peripheral sent to itself. A mask of zeros means "check no bit of
+       the ID", so everything passes. */
+    CAN_FilterTypeDef filter = {0};
+    filter.FilterBank           = 0;
+    filter.FilterMode           = CAN_FILTERMODE_IDMASK;
+    filter.FilterScale          = CAN_FILTERSCALE_32BIT;
+    filter.FilterIdHigh         = 0x0000;
+    filter.FilterIdLow          = 0x0000;
+    filter.FilterMaskIdHigh     = 0x0000;
+    filter.FilterMaskIdLow      = 0x0000;
+    filter.FilterFIFOAssignment = CAN_RX_FIFO0;
+    filter.FilterActivation     = ENABLE;
+    filter.SlaveStartFilterBank = 14;
+
+    if (HAL_CAN_ConfigFilter(&hcan1, &filter) != HAL_OK) {
+      n = snprintf(line, sizeof line, "CAN: filter failed\r\n");
+      HAL_UART_Transmit(&huart2, (uint8_t *)line, n, 100);
+    } else if (HAL_CAN_Start(&hcan1) != HAL_OK) {
+      n = snprintf(line, sizeof line, "CAN: start failed\r\n");
+      HAL_UART_Transmit(&huart2, (uint8_t *)line, n, 100);
+    } else {
+      CAN_TxHeaderTypeDef tx = {0};
+      tx.StdId = 0x123;
+      tx.IDE   = CAN_ID_STD;
+      tx.RTR   = CAN_RTR_DATA;
+      tx.DLC   = 4;
+
+      uint8_t  payload[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+      uint32_t mailbox;
+
+      if (HAL_CAN_AddTxMessage(&hcan1, &tx, payload, &mailbox) != HAL_OK) {
+        n = snprintf(line, sizeof line, "CAN: tx failed\r\n");
+      } else {
+        /* In loopback the frame comes back in microseconds. The 100 ms cap is
+           only there so a misconfiguration cannot hang the board. */
+        uint32_t t0 = HAL_GetTick();
+        while (HAL_CAN_GetRxFifoFillLevel(&hcan1, CAN_RX_FIFO0) == 0 &&
+               HAL_GetTick() - t0 < 100) {
+        }
+
+        if (HAL_CAN_GetRxFifoFillLevel(&hcan1, CAN_RX_FIFO0) == 0) {
+          /* ESR is the error status register; its low bits (LEC) name the
+             last error the peripheral saw. */
+          n = snprintf(line, sizeof line, "CAN: nothing rx, ESR=0x%08lX\r\n",
+                       (unsigned long)hcan1.Instance->ESR);
+        } else {
+          CAN_RxHeaderTypeDef rx;
+          uint8_t buf[8] = {0};
+          HAL_CAN_GetRxMessage(&hcan1, CAN_RX_FIFO0, &rx, buf);
+          n = snprintf(line, sizeof line,
+                       "CAN rx: ID=0x%03lX DLC=%lu  %02X %02X %02X %02X\r\n",
+                       (unsigned long)rx.StdId, (unsigned long)rx.DLC,
+                       buf[0], buf[1], buf[2], buf[3]);
+        }
+      }
+      HAL_UART_Transmit(&huart2, (uint8_t *)line, n, 100);
+    }
+  }
 
   /* USER CODE END 2 */
 
@@ -216,6 +286,43 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief CAN1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CAN1_Init(void)
+{
+
+  /* USER CODE BEGIN CAN1_Init 0 */
+
+  /* USER CODE END CAN1_Init 0 */
+
+  /* USER CODE BEGIN CAN1_Init 1 */
+
+  /* USER CODE END CAN1_Init 1 */
+  hcan1.Instance = CAN1;
+  hcan1.Init.Prescaler = 6;
+  hcan1.Init.Mode = CAN_MODE_LOOPBACK;
+  hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_11TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan1.Init.TimeTriggeredMode = DISABLE;
+  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoWakeUp = DISABLE;
+  hcan1.Init.AutoRetransmission = DISABLE;
+  hcan1.Init.ReceiveFifoLocked = DISABLE;
+  hcan1.Init.TransmitFifoPriority = DISABLE;
+  if (HAL_CAN_Init(&hcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CAN1_Init 2 */
+
+  /* USER CODE END CAN1_Init 2 */
 
 }
 
