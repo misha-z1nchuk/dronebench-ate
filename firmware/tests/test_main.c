@@ -12,6 +12,7 @@ int main(void)
     test_sampler();
     test_metrics();
     test_calibration();
+    test_current_sensor();
     test_session();
     test_telemetry();
     test_simulator();

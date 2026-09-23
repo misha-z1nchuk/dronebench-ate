@@ -15,6 +15,8 @@
 
 #include <stdbool.h>
 
+#include "dronebench/calibration.h"
+#include "dronebench/current_sensor.h"
 #include "dronebench/simulator.h"
 
 /*
@@ -42,6 +44,24 @@ void platform_stm32_init(void);
  * refuses too.
  */
 float platform_stm32_vdda_mv(void);
+
+/*
+ * The calibrations the real paths use. Loaded from bench_calibration.h at
+ * init; `cal fit` and `zero` replace them until the next reset.
+ *
+ * These read the hardware regardless of `simulate`, because calibrating
+ * against the simulator would be calibrating nothing.
+ */
+const calibration_t *platform_stm32_voltage_calibration(void);
+void platform_stm32_set_voltage_calibration(const calibration_t *cal);
+current_sensor_t *platform_stm32_current_sensor(void);
+
+/*
+ * Millivolts at the ACS724's two divider nodes, read back to back. The raw
+ * half of `zero` and of the wiring check in `nodes`; the sampler goes through
+ * platform_adc_read_current() instead.
+ */
+bool platform_stm32_read_current_nodes(float *out_node_mv, float *vcc_node_mv);
 
 /*
  * Same contract as the ESP32 build: the core must not be able to tell that a

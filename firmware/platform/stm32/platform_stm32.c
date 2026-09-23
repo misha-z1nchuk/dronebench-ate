@@ -7,6 +7,9 @@
  */
 #include "platform_stm32.h"
 
+#include "bench_calibration.h"
+#include "dronebench/calibration.h"
+#include "dronebench/current_sensor.h"
 #include "dronebench/platform.h"
 #include "stm32f4xx_hal.h"
 
@@ -43,25 +46,62 @@ extern ADC_HandleTypeDef  hadc1;
 #define ADC_CHANNEL_SENSOR_VCC ADC_CHANNEL_4
 
 /*
- * Conversions averaged per reading, same reasoning as the ESP32 build: four
- * times the samples buys one bit, so 64 is worth three. Unlike the ESP32 the
- * result here is a raw count rather than an already-rounded millivolt, so
- * averaging before conversion loses nothing and is what happens.
+ * Conversions averaged per reading. Four times the samples buys one bit, so
+ * 32 is worth two and a half. Unlike the ESP32 the result here is a raw count
+ * rather than an already-rounded millivolt, so averaging before conversion
+ * loses nothing and is what happens.
+ *
+ * 32 and not the 64 of the ESP32 build because of the period budget, not
+ * the noise. One telemetry sample reads four channels and then transmits
+ * about 0.7 ms of text, all inside 2 ms:
+ *
+ *     VREFINT     8 x 23.4 us    190 us
+ *     battery    32 x ~6 us      190 us
+ *     ACS OUT    32 x ~6 us      190 us
+ *     ACS VCC    16 x ~6 us       95 us
+ *     transmit                   700 us
+ *                               ------
+ *                               ~1.4 ms of 2.0
+ *
+ * The ~6 us is 96 ADC clocks at 21 MHz plus the HAL's per-conversion
+ * overhead, which is an estimate; `status` reports the measured worst case as
+ * worst_us, and that is the number to trust. More averaging for calibration
+ * comes from repeating reads (`adc 64`, `cal add`), not from here.
  */
-#define ADC_SAMPLES 64
-/* Fewer for the reference: it is a slow-moving supply rail, not a signal. */
-#define VREF_SAMPLES 16
+#define ADC_SAMPLES 32
+/* A slow-moving rail, not a signal. Only the voltage path needs it at all. */
+#define VREF_SAMPLES 8
+/* VCC sits still at ~5 V; OUT is the signal. */
+#define ADC_SAMPLES_SENSOR_VCC 16
 #define ADC_FULL_SCALE 4095.0f
 #define ADC_POLL_TIMEOUT_MS 10u
 
 /*
- * 480 cycles, the longest the F4 offers. The dividers present about 4.9 kOhm
- * of Thevenin impedance and the sample-and-hold capacitor has to charge
- * through it; a short sampling time would report a number pulled toward
- * whatever the previous conversion left on the capacitor. The internal
- * reference separately requires at least 10 us, which this also satisfies.
+ * Sampling time, which is not the same question for every channel.
+ *
+ * VREFINT: the reference manual requires at least 10 us. At 84 MHz / 4 =
+ * 21 MHz the ADC clock is 47.6 ns, so that is 210 cycles, and the next
+ * setting up is 480.
+ *
+ * The three divider nodes: 84 cycles, 4 us. The worry with a short sampling
+ * time is that the 4 pF sample-and-hold capacitor has to charge through the
+ * divider's ~4.9 kOhm Thevenin resistance, and a reading gets pulled toward
+ * whatever the previous channel left on it. The datasheet's formula for the
+ * largest source resistance that still settles to 12 bits,
+ *
+ *     R_max = (k - 0.5) / (f_ADC * C_ADC * ln(2^14)) - R_ADC
+ *           = 83.5 / (21e6 * 4e-12 * 9.70) - 6e3   = ~96 kOhm,
+ *
+ * leaves a factor of twenty. And that formula ignores the 100 nF filter
+ * capacitor on each node, which is the real source for the sampling
+ * capacitor: sharing charge with 4 pF moves 100 nF by 4e-5 of the difference
+ * — 40 uV per volt of channel-to-channel step, a twentieth of a count.
+ *
+ * Bring-up used 480 everywhere, which was safe and is a quarter of the period
+ * budget above spent on nothing.
  */
-#define ADC_SAMPLING_TIME ADC_SAMPLETIME_480CYCLES
+#define ADC_SAMPLING_TIME_SIGNAL  ADC_SAMPLETIME_84CYCLES
+#define ADC_SAMPLING_TIME_VREFINT ADC_SAMPLETIME_480CYCLES
 
 /*
  * ---------------------------------------------------------------------------
@@ -118,6 +158,10 @@ extern ADC_HandleTypeDef  hadc1;
 #define VDDA_PLAUSIBLE_MAX_MV 3600.0f
 
 static float s_vdda_mv; /* 0 until established; 0 means every read refuses */
+
+/* Loaded from bench_calibration.h at init, replaced by `cal fit` / `zero`. */
+static calibration_t    s_voltage_cal;
+static current_sensor_t s_current;
 
 /*
  * Simulation state. Default on, same as the ESP32 build: until a divider is
@@ -208,46 +252,46 @@ uint64_t platform_time_us(void)
 /* ADC                                                                      */
 /* ------------------------------------------------------------------------ */
 
-static bool adc_read_raw(uint32_t channel, uint32_t *raw)
+/*
+ * One channel, N conversions, one mean.
+ *
+ * The channel is configured once and the ADC left enabled for the whole
+ * burst. Bring-up called HAL_ADC_Stop() after every conversion, which clears
+ * ADON — and the next HAL_ADC_Start() then waits out the ADC's power-up
+ * stabilisation delay again, every single time. For a burst of 32 that was
+ * most of the cost.
+ */
+static bool adc_read_average(uint32_t channel, uint32_t sampling_time,
+                             uint32_t samples, float *mean)
 {
     ADC_ChannelConfTypeDef cfg = {0};
+    uint32_t               sum = 0;
+    uint32_t               i;
+    bool                   ok = true;
 
     cfg.Channel      = channel;
     cfg.Rank         = 1;
-    cfg.SamplingTime = ADC_SAMPLING_TIME;
-
+    cfg.SamplingTime = sampling_time;
     if (HAL_ADC_ConfigChannel(&hadc1, &cfg) != HAL_OK) {
         return false;
     }
-    if (HAL_ADC_Start(&hadc1) != HAL_OK) {
-        return false;
-    }
-    if (HAL_ADC_PollForConversion(&hadc1, ADC_POLL_TIMEOUT_MS) != HAL_OK) {
-        HAL_ADC_Stop(&hadc1);
-        return false;
-    }
-
-    *raw = HAL_ADC_GetValue(&hadc1);
-    HAL_ADC_Stop(&hadc1);
-    return true;
-}
-
-static bool adc_read_average(uint32_t channel, uint32_t samples, float *mean)
-{
-    uint32_t sum = 0;
-    uint32_t i;
 
     for (i = 0; i < samples; i++) {
-        uint32_t raw;
-
         /* Not an assert and not a retry: a driver hiccup must not reboot a
            bench with a motor spinning, and must not be averaged over either.
            sampler_t counts a refused reading as sensor_failures, which is
            where a fault belongs. */
-        if (!adc_read_raw(channel, &raw)) {
-            return false;
+        if (HAL_ADC_Start(&hadc1) != HAL_OK ||
+            HAL_ADC_PollForConversion(&hadc1, ADC_POLL_TIMEOUT_MS) != HAL_OK) {
+            ok = false;
+            break;
         }
-        sum += raw;
+        sum += HAL_ADC_GetValue(&hadc1);
+    }
+
+    HAL_ADC_Stop(&hadc1);
+    if (!ok) {
+        return false;
     }
 
     /* 64 * 4095 is 262 080 — exact in a float's 24-bit mantissa with room to
@@ -265,7 +309,8 @@ static bool measure_vdda_mv(float *vdda_mv)
     if (cal < VREFINT_CAL_MIN || cal > VREFINT_CAL_MAX) {
         return false;
     }
-    if (!adc_read_average(ADC_CHANNEL_VREFINT, VREF_SAMPLES, &measured)) {
+    if (!adc_read_average(ADC_CHANNEL_VREFINT, ADC_SAMPLING_TIME_VREFINT,
+                          VREF_SAMPLES, &measured)) {
         return false;
     }
     if (measured < 1.0f) {
@@ -294,7 +339,7 @@ float platform_stm32_vdda_mv(void) { return s_vdda_mv; }
  * moves with the board's own load — the LED, the ST-LINK, whatever the ADC
  * itself is doing — and a reference measured under one load applied to a
  * signal measured under another puts the difference straight into the result.
- * Pairing them in the same burst removes it. Sixteen extra conversions is a
+ * Pairing them in the same burst removes it. Eight extra conversions is a
  * few hundred microseconds, which buys more than it costs.
  */
 bool platform_adc_read_millivolts(float *value)
@@ -308,7 +353,8 @@ bool platform_adc_read_millivolts(float *value)
     }
     s_vdda_mv = vdda_mv;
 
-    if (!adc_read_average(ADC_CHANNEL_BATTERY, ADC_SAMPLES, &counts)) {
+    if (!adc_read_average(ADC_CHANNEL_BATTERY, ADC_SAMPLING_TIME_SIGNAL,
+                          ADC_SAMPLES, &counts)) {
         return false;
     }
 
@@ -327,8 +373,56 @@ static void simulated_pair(float *voltage_v, float *current_a)
     simulator_read(&s_source.sim, platform_time_us(), voltage_v, current_a);
 }
 
+/*
+ * Millivolts at one of the ACS724's divider nodes.
+ *
+ * Uses the VDDA the voltage path last established instead of measuring it
+ * again. The current is a ratio of two such readings, so VDDA divides out of
+ * it (current_sensor.h); here it only sets the scale for the VCC window
+ * check, which a stale value a percent off does not disturb. Re-measuring
+ * would cost 190 us per sample for a number that cancels.
+ */
+static bool read_sensor_node_mv(uint32_t channel, uint32_t samples, float *mv)
+{
+    float counts;
+
+    if (s_vdda_mv <= 0.0f) {
+        float vdda_mv;
+
+        if (!measure_vdda_mv(&vdda_mv)) {
+            return false;
+        }
+        s_vdda_mv = vdda_mv;
+    }
+
+    if (!adc_read_average(channel, ADC_SAMPLING_TIME_SIGNAL, samples, &counts)) {
+        return false;
+    }
+    *mv = counts * s_vdda_mv / ADC_FULL_SCALE;
+    return true;
+}
+
+bool platform_stm32_read_current_nodes(float *out_node_mv, float *vcc_node_mv)
+{
+    float out_mv;
+    float vcc_mv;
+
+    /* VCC first and OUT second, back to back: the ratio is only as good as
+       the assumption that both describe the same instant. */
+    if (!read_sensor_node_mv(ADC_CHANNEL_SENSOR_VCC, ADC_SAMPLES_SENSOR_VCC,
+                             &vcc_mv) ||
+        !read_sensor_node_mv(ADC_CHANNEL_CURRENT, ADC_SAMPLES, &out_mv)) {
+        return false;
+    }
+    *out_node_mv = out_mv;
+    *vcc_node_mv = vcc_mv;
+    return true;
+}
+
 bool platform_adc_read_voltage(float *value)
 {
+    float mv;
+
     if (s_source.enabled) {
         float current;
 
@@ -336,15 +430,20 @@ bool platform_adc_read_voltage(float *value)
         return true;
     }
 
-    /* Day 12 on this board. Becomes: read millivolts, then
-       calibration_apply(&s_voltage_cal, mv, value). It stays false until a fit
-       exists and is stored — an uncalibrated reading is not a rough
-       measurement of the battery, it is a measurement of something else. */
-    return false;
+    /* Refuses until a fit exists — calibration_apply() checks. An
+       uncalibrated reading is not a rough measurement of the battery, it is a
+       measurement of something else. */
+    if (!platform_adc_read_millivolts(&mv)) {
+        return false;
+    }
+    return calibration_apply(&s_voltage_cal, mv, value);
 }
 
 bool platform_adc_read_current(float *value)
 {
+    float out_mv;
+    float vcc_mv;
+
     if (s_source.enabled) {
         float voltage;
 
@@ -352,8 +451,11 @@ bool platform_adc_read_current(float *value)
         return true;
     }
 
-    /* Day 13. */
-    return false;
+    /* Refuses until zeroed, and whenever VCC is off or OUT is clipped. */
+    if (!platform_stm32_read_current_nodes(&out_mv, &vcc_mv)) {
+        return false;
+    }
+    return current_sensor_amps(&s_current, out_mv, vcc_mv, value);
 }
 
 bool platform_ref_read_current(float *value)
@@ -449,7 +551,39 @@ void platform_stm32_init(void)
        allowed to fail: an unknown reference is reported as unknown rather
        than replaced with a nominal value that looks just as plausible. */
     s_vdda_mv = measure_vdda_mv(&vdda_mv) ? vdda_mv : 0.0f;
+
+    /* A zero scale is the header's way of saying "not calibrated yet", and
+       leaves the struct invalid so the voltage path keeps refusing. */
+    calibration_init(&s_voltage_cal);
+    if (BENCH_VOLTAGE_SCALE_V_PER_MV > 0.0f) {
+        s_voltage_cal.scale_v_per_mv = BENCH_VOLTAGE_SCALE_V_PER_MV;
+        s_voltage_cal.offset_v       = BENCH_VOLTAGE_OFFSET_V;
+        s_voltage_cal.rms_residual_v = BENCH_VOLTAGE_RMS_RESIDUAL_V;
+        s_voltage_cal.max_residual_v = BENCH_VOLTAGE_MAX_RESIDUAL_V;
+        s_voltage_cal.points         = BENCH_VOLTAGE_POINTS;
+        s_voltage_cal.valid          = true;
+    }
+
+    current_sensor_init(&s_current, BENCH_OUT_DIVIDER, BENCH_VCC_DIVIDER,
+                        CURRENT_SENSOR_ACS724_50AB_AMPS_PER_RATIO);
+    if (BENCH_CURRENT_ZERO_RATIO > 0.0f) {
+        /* A header value outside the tolerance is refused here exactly as a
+           live one would be, and the path stays unzeroed. */
+        (void)current_sensor_set_zero(&s_current, BENCH_CURRENT_ZERO_RATIO);
+    }
 }
+
+const calibration_t *platform_stm32_voltage_calibration(void)
+{
+    return &s_voltage_cal;
+}
+
+void platform_stm32_set_voltage_calibration(const calibration_t *cal)
+{
+    s_voltage_cal = *cal;
+}
+
+current_sensor_t *platform_stm32_current_sensor(void) { return &s_current; }
 
 void platform_stm32_set_simulation(bool enabled, sim_profile_t profile)
 {
